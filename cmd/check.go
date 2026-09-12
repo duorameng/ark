@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
@@ -10,13 +11,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"ark/pkg/archive"
 	"ark/pkg/config"
+	"ark/pkg/oci"
 )
 
 func runCheck(args []string) {
 	cleanedArgs, cliKey := extractKeyFlag(args)
+	cleanedArgs, cliTarget := extractTargetFlag(cleanedArgs)
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
 	_ = cleanedArgs
 
@@ -241,30 +245,68 @@ func runCheck(args []string) {
 		printPass("安全封条", "当前配置未开启加密，无需装载封条密钥")
 	}
 
-	// 5. 检查容器引擎与云端凭据
-	fmt.Println("\n5. 容器引擎与云端港位连通性 (Engine & Credentials):")
+	// 5. 检查交付引擎与多通道云端港位鉴权连通性
+	fmt.Println("\n5. 交付引擎与多通道云端港位鉴权体检 (Engine & Registry Targets):")
+	printPass("交付引擎", "纯 Go 原生 OCI 流式直推引擎已就绪 (Zero-Docker Pipeline, 0 宿主机依赖)")
+
 	dockerPath, dockerErr := exec.LookPath("docker")
-	if dockerErr != nil {
-		printWarn("容器引擎", "未检测到 docker 命令行工具 (若仅使用 'ark unpack' 独立解封则无需 Docker)")
-	} else {
-		printPass("容器引擎", fmt.Sprintf("检测到 Docker 客户端: %s", dockerPath))
+	if dockerErr == nil {
+		dockerPass := "检测到 Docker 客户端: " + dockerPath
 		cmd := exec.Command("docker", "info")
-		if err := cmd.Run(); err != nil {
-			printWarn("引擎通信", "Docker 守护进程可能未启动或当前用户无权限访问 Docker socket")
+		if err := cmd.Run(); err == nil {
+			dockerPass += " (守护进程正常运行，支持 --engine=docker 传统构建)"
 		} else {
-			printPass("引擎通信", "Docker 守护进程运行正常，可执行容器构建与镜像推送")
+			dockerPass += " (守护进程未启动，默认原生 OCI 引擎完全不受影响)"
 		}
+		printPass("备选引擎", dockerPass)
+	} else {
+		printPass("备选引擎", "未检测到 Docker 客户端 (完全不影响使用，原生 OCI 引擎零依赖)")
 	}
 
-	token := loadToken(ws)
-	if token == "" {
-		printWarn("云端凭证", "未检测到 GitHub Token (GH_TOKEN/GITHUB_TOKEN/.env/gh auth token)。若向私有仓库推送请先配置凭证")
+	defaultRepo := ""
+	if cfg != nil {
+		defaultRepo = cfg.Repository
+	}
+	targets := resolveRegistryTargets(ws, cliTarget, cliRepo, defaultRepo)
+	if len(targets) == 0 {
+		printFail("云端港位", "未识别到任何有效的远端镜像仓库 (请在 .env 中配置 ALIYUN_REPOSITORY 或 GITHUB_REPOSITORY)")
 	} else {
-		masked := "******"
-		if len(token) > 8 {
-			masked = token[:4] + "****" + token[len(token)-4:]
+		for _, target := range targets {
+			targetTitle := fmt.Sprintf("港位[%s]", target.DisplayName)
+			printPass(targetTitle, fmt.Sprintf("目标仓库: %s", target.Repository))
+
+			// 检查认证凭据
+			if target.Password == "" {
+				if target.IsGHCR {
+					printWarn(targetTitle, "未检测到通行凭据 (GH_TOKEN/GITHUB_TOKEN)。若为私有仓库请在 .env 配置")
+				} else {
+					printFail(targetTitle, "未检测到通道访问密码 (请在 .env 中配置 ALIYUN_PASSWORD 或对应密码)")
+				}
+			} else {
+				userStr := target.Username
+				if userStr == "" {
+					userStr = "(通过 Token 自动协商)"
+				} else {
+					userStr = maskCredential(userStr)
+				}
+				printPass(targetTitle, fmt.Sprintf("通行凭据已装配: 用户 [%s] | 密码/Token [%s]", userStr, maskCredential(target.Password)))
+
+				// 实时握手连通性体检 (带 8s 超时防卡死)
+				probeCtx, probeCancel := context.WithTimeout(context.Background(), 8*time.Second)
+				client, clientErr := oci.NewClient(target.Repository, target.Username, target.Password)
+				if clientErr != nil {
+					printFail(targetTitle, fmt.Sprintf("OCI 客户端初始化失败: %v", clientErr))
+				} else {
+					authErr := client.EnsureAuth(probeCtx, "")
+					if authErr != nil {
+						printFail(targetTitle, fmt.Sprintf("远端港位握手/鉴权未通过: %v (请核对账号密码或网络连通性)", authErr))
+					} else {
+						printPass(targetTitle, "远端港位握手成功，通行认证校验有效 (Bearer Token 协商成功)！")
+					}
+				}
+				probeCancel()
+			}
 		}
-		printPass("云端凭证", fmt.Sprintf("已成功装配认证 Token (%s)", masked))
 	}
 
 	// 6. 体检总结
@@ -279,4 +321,28 @@ func runCheck(args []string) {
 		fmt.Printf("[-] 检测到 %d 处阻碍航运的配置错误，请根据上方标注为 ✗ 的条目进行修复后再试。\n", failCount)
 		os.Exit(1)
 	}
+}
+
+func maskCredential(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "(未配置)"
+	}
+	if strings.Contains(s, "@") {
+		parts := strings.SplitN(s, "@", 2)
+		u := parts[0]
+		if len(u) > 3 {
+			u = u[:3] + "****"
+		} else {
+			u = u[:1] + "****"
+		}
+		return u + "@" + parts[1]
+	}
+	if len(s) > 8 {
+		return s[:3] + "****" + s[len(s)-3:]
+	}
+	if len(s) > 4 {
+		return s[:2] + "****"
+	}
+	return "****"
 }
