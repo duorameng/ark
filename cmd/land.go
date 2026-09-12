@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"ark/pkg/archive"
-	"ark/pkg/config"
 	"ark/pkg/docker"
 	"ark/pkg/github"
 	"ark/pkg/oci"
@@ -22,15 +21,7 @@ func runLand(args []string) {
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
-	loadEnvFile(ws)
-	configPath := filepath.Join(ws, "config.json")
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[-] 加载配置失败: %v\n", err)
-		os.Exit(1)
-	}
-
-	cfg.Repository = resolveRepository(cfg.Repository, cliRepo)
+	cfg, _, _ := LoadAppConfig(ws, cliRepo)
 
 	category := cfg.Category
 	var tag string
@@ -95,14 +86,8 @@ func runLand(args []string) {
 	fmt.Printf("[安全] 封条状态: %v\n", cfg.Encrypt)
 
 	var sealPass []byte
-	if cfg.Encrypt {
-		pass, err := resolveSealKey(ws, false, cliKey)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 获取安全封条密钥失败: %v\n", err)
-			os.Exit(1)
-		}
-		sealPass = pass
-	}
+	pass, _ := resolveSealKey(ws, false, cliKey)
+	sealPass = pass
 
 	tmpLandDir := filepath.Join(ws, "tmp", fmt.Sprintf("land_%d", time.Now().Unix()))
 	_ = os.MkdirAll(tmpLandDir, 0755)
@@ -181,6 +166,11 @@ func runLand(args []string) {
 		fullFile := filepath.Join(tmpLandDir, fname)
 
 		if strings.HasSuffix(fname, ".dat") || strings.HasSuffix(fname, ".tar.enc") || strings.HasSuffix(fname, ".enc") {
+			if len(sealPass) == 0 {
+				fmt.Fprintf(os.Stderr, "[-] 货舱 [%s] 包含 AES-256 安全密闭封条，但当前未配置解密口令！\n", fname)
+				fmt.Fprintln(os.Stderr, "    提示: 请在命令行传入 --key \"<您的口令>\"，或在 .env 中配置 ARK_SEAL_KEY")
+				os.Exit(1)
+			}
 			fmt.Printf("-> 正在开封并流式还原 (%s -> %s, 零中间解密文件落盘)...\n", fname, targetSubDir)
 			if err := archive.UnsealAndUnpackStream(fullFile, targetSubDir, sealPass); err != nil {
 				fmt.Fprintf(os.Stderr, "[-] 解封还原失败: %v\n", err)

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"ark/pkg/archive"
-	"ark/pkg/config"
 )
 
 func runUnpack(args []string) {
@@ -88,7 +87,7 @@ func runUnpack(args []string) {
 		fmt.Printf("[交付] 批量恢复目录: %s\n", destDir)
 
 		folderNameMap := make(map[string]string)
-		if cfg, err := config.Load(filepath.Join(ws, "config.json")); err == nil {
+		if cfg, _, err := LoadAppConfig(ws, ""); err == nil && cfg != nil {
 			for _, src := range cfg.Sources {
 				folderNameMap[src.ID] = filepath.Base(src.Path)
 			}

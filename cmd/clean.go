@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ark/pkg/config"
 	"ark/pkg/docker"
 	"ark/pkg/github"
 )
@@ -17,7 +16,7 @@ func runClean(args []string) {
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
-	loadEnvFile(ws)
+	cfg, _, _ := LoadAppConfig(ws, cliRepo)
 
 	includeAll := false
 	includeDockerImages := false
@@ -111,9 +110,8 @@ func runClean(args []string) {
 		if !dockerActive {
 			fmt.Println("   [!] 提示: 本地未运行 Docker 守护进程，跳过指定镜像清理。")
 		} else {
-			configPath := filepath.Join(ws, "config.json")
-			if cfg, err := config.Load(configPath); err == nil && cfg.Repository != "" {
-				repoToClean := resolveRepository(cfg.Repository, cliRepo)
+			if cfg.Repository != "" {
+				repoToClean := cfg.Repository
 				fmt.Printf("-> 正在检索并清理本地关联镜像: %s...\n", repoToClean)
 				out, err := exec.Command("docker", "images", "--filter=reference="+repoToClean+"*", "-q").Output()
 				if err == nil && len(out) > 0 {
@@ -135,13 +133,7 @@ func runClean(args []string) {
 	// 6. 如果指定了 --untagged 或 --all，扫描并清理远端孤立未打标版本
 	if cleanUntagged {
 		fmt.Println("\n------------------- 正在扫描远端 GitHub 镜像港口 -------------------")
-		configPath := filepath.Join(ws, "config.json")
-		cfg, err := config.Load(configPath)
-		repo := ""
-		if err == nil && cfg.Repository != "" {
-			repo = cfg.Repository
-		}
-		repo = resolveRepository(repo, cliRepo)
+		repo := cfg.Repository
 		token := loadToken(ws)
 
 		if repo == "" {

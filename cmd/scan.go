@@ -30,10 +30,7 @@ func runScan(args []string) {
 
 	scanner.PrintScanSummary(results)
 
-	cfg, _ := config.Load(configPath)
-	if cfg == nil {
-		cfg = config.DefaultConfig()
-	}
+	cfg, _, _ := LoadAppConfig(ws, "")
 
 	cfg.Sources = make([]config.Source, 0, len(results))
 	for _, r := range results {

@@ -3,9 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
-	"ark/pkg/config"
 	"ark/pkg/github"
 )
 
@@ -14,15 +12,7 @@ func runList(args []string) {
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
-	loadEnvFile(ws)
-	configPath := filepath.Join(ws, "config.json")
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[-] 加载配置失败: %v\n", err)
-		os.Exit(1)
-	}
-
-	cfg.Repository = resolveRepository(cfg.Repository, cliRepo)
+	cfg, _, _ := LoadAppConfig(ws, cliRepo)
 
 	categoryFilter := ""
 	if len(args) > 0 {

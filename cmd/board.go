@@ -175,15 +175,12 @@ func runBoard(args []string, dryRun bool) {
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
-	loadEnvFile(ws)
-	configPath := filepath.Join(ws, "config.json")
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[-] 加载配置失败: %v\n", err)
+	cfg, hasConfigFile, err := LoadAppConfig(ws, cliRepo)
+	if !hasConfigFile || err != nil {
+		fmt.Fprintf(os.Stderr, "[-] 登船失败，未能加载有效货运清单: %v\n", err)
+		fmt.Fprintln(os.Stderr, "    提示: 请在工作区配置 config.json，或先运行 'ark scan <目录>' 自动生成清单。")
 		os.Exit(1)
 	}
-
-	cfg.Repository = resolveRepository(cfg.Repository, cliRepo)
 
 	tag, category, precision, retryCount, shouldClean, cleanAll := parseBoardFlags(cfg, args)
 

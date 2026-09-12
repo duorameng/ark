@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -22,96 +21,12 @@ type ManifestEntry struct {
 	UpdatedAt   string `json:"updated_at"`
 }
 
-func getWorkspaceRoot() string {
-	exePath, err := os.Executable()
-	if err == nil {
-		dir := filepath.Dir(exePath)
-		if filepath.Base(dir) == "scripts" || filepath.Base(dir) == "tmp" {
-			return filepath.Dir(dir)
-		}
-		if _, err := os.Stat(filepath.Join(dir, "config.json")); err == nil {
-			return dir
-		}
-	}
-	cwd, _ := os.Getwd()
-	return cwd
-}
-
-// loadEnvFile 从工作区加载 .env 文件，并将其中未定义的配置注入至进程环境变量
-func loadEnvFile(workspaceRoot string) {
-	envPath := filepath.Join(workspaceRoot, ".env")
-	data, err := os.ReadFile(envPath)
-	if err != nil {
-		return
-	}
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			k := strings.TrimSpace(parts[0])
-			v := strings.Trim(strings.TrimSpace(parts[1]), `"' `)
-			if os.Getenv(k) == "" && v != "" {
-				_ = os.Setenv(k, v)
-			}
-		}
-	}
-}
-
-func loadToken(workspaceRoot string) string {
-	loadEnvFile(workspaceRoot)
-
-	if token := os.Getenv("GH_TOKEN"); token != "" {
-		return strings.TrimSpace(token)
-	}
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
-		return strings.TrimSpace(token)
-	}
-
-	cmd := exec.Command("gh", "auth", "token")
-	if out, err := cmd.Output(); err == nil {
-		tok := strings.TrimSpace(string(out))
-		if tok != "" {
-			return tok
-		}
-	}
-
-	return ""
-}
-
 // DeriveSealKey 将用户自定义口令转换为 256 位确定性安全密文 (单向哈希派生，跨机器绝对一致，绝不存储明文密码)
 func DeriveSealKey(rawPass string) string {
 	rawPass = strings.TrimSpace(rawPass)
 	h := hmac.New(sha256.New, []byte("ARK_SEAL_KDF_SALT_V1"))
 	h.Write([]byte(rawPass))
 	return base64.StdEncoding.EncodeToString(h.Sum(nil))
-}
-
-// extractKeyFlag 从命令行参数中提取 --key 或 -k 参数
-func extractKeyFlag(args []string) ([]string, string) {
-	var cleaned []string
-	var key string
-
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--key" || arg == "-k" {
-			if i+1 < len(args) {
-				key = args[i+1]
-				i++
-			}
-		} else if strings.HasPrefix(arg, "--key=") {
-			key = strings.TrimPrefix(arg, "--key=")
-		} else if strings.HasPrefix(arg, "-k=") {
-			key = strings.TrimPrefix(arg, "-k=")
-		} else {
-			cleaned = append(cleaned, arg)
-		}
-	}
-
-	return cleaned, strings.TrimSpace(key)
 }
 
 // findPersistedKey 查找本地持久化的非明文密钥文件 (多路径智能探测)
@@ -230,83 +145,5 @@ func resolveSealKey(ws string, allowGenerate bool, cliKey string) ([]byte, error
 	return []byte(derivedKey), nil
 }
 
-// extractRepoFlag 从命令行参数中提取 --repo, --repository, --image, -i 参数
-func extractRepoFlag(args []string) ([]string, string) {
-	var cleaned []string
-	repo := ""
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--repo" || arg == "--repository" || arg == "--image" || arg == "-i" {
-			if i+1 < len(args) {
-				repo = args[i+1]
-				i++
-				continue
-			}
-		} else if strings.HasPrefix(arg, "--repo=") {
-			repo = strings.TrimPrefix(arg, "--repo=")
-			continue
-		} else if strings.HasPrefix(arg, "--repository=") {
-			repo = strings.TrimPrefix(arg, "--repository=")
-			continue
-		} else if strings.HasPrefix(arg, "--image=") {
-			repo = strings.TrimPrefix(arg, "--image=")
-			continue
-		} else if strings.HasPrefix(arg, "-i=") {
-			repo = strings.TrimPrefix(arg, "-i=")
-			continue
-		}
-		cleaned = append(cleaned, arg)
-	}
-	return cleaned, repo
-}
 
-// resolveRepository 综合解析镜像仓库名称: 命令行参数 > 环境变量 > 配置文件
-func resolveRepository(cfgRepo, cliRepo string) string {
-	if strings.TrimSpace(cliRepo) != "" {
-		return strings.TrimSpace(cliRepo)
-	}
-	if envRepo := os.Getenv("ARK_REPOSITORY"); strings.TrimSpace(envRepo) != "" {
-		return strings.TrimSpace(envRepo)
-	}
-	if envImage := os.Getenv("ARK_IMAGE"); strings.TrimSpace(envImage) != "" {
-		return strings.TrimSpace(envImage)
-	}
-	if strings.TrimSpace(cfgRepo) != "" {
-		return strings.TrimSpace(cfgRepo)
-	}
-	return "ghcr.io/duorameng/ark"
-}
-
-// extractEngineFlag 从命令行参数中提取 --engine 或 -e 参数 (默认 oci)
-func extractEngineFlag(args []string) ([]string, string) {
-	var cleaned []string
-	engine := ""
-
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--engine" || arg == "-e" {
-			if i+1 < len(args) {
-				engine = strings.ToLower(args[i+1])
-				i++
-				continue
-			}
-		} else if strings.HasPrefix(arg, "--engine=") {
-			engine = strings.ToLower(strings.TrimPrefix(arg, "--engine="))
-			continue
-		} else if strings.HasPrefix(arg, "-e=") {
-			engine = strings.ToLower(strings.TrimPrefix(arg, "-e="))
-			continue
-		}
-		cleaned = append(cleaned, arg)
-	}
-
-	if engine == "" {
-		engine = strings.ToLower(strings.TrimSpace(os.Getenv("ARK_ENGINE")))
-	}
-	if engine == "" {
-		engine = "oci"
-	}
-
-	return cleaned, engine
-}
 

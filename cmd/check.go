@@ -71,7 +71,7 @@ func runCheck(args []string) {
 	configPath := filepath.Join(ws, "config.json")
 	var cfg *config.Config
 	if _, err := os.Stat(configPath); err != nil {
-		printFail("配置文件", fmt.Sprintf("未找到主配置文件: %s (请先创建或从模板生成)", configPath))
+		printFail("配置文件", fmt.Sprintf("未找到主配置文件: %s (提示: 若仅执行货物下船还原 land，无需此文件，可直接运行 ark land)", configPath))
 	} else {
 		cfgData, readErr := os.ReadFile(configPath)
 		if readErr != nil {
@@ -84,12 +84,11 @@ func runCheck(args []string) {
 				printPass("JSON语法", "config.json 语法有效，解析成功")
 			}
 
-			loadedCfg, loadErr := config.Load(configPath)
+			loadedCfg, _, loadErr := LoadAppConfig(ws, cliRepo)
 			if loadErr != nil {
 				printFail("解析配置", fmt.Sprintf("加载配置失败: %v", loadErr))
 			} else {
 				cfg = loadedCfg
-				cfg.Repository = resolveRepository(cfg.Repository, cliRepo)
 				// 校验 repository
 				if strings.TrimSpace(cfg.Repository) == "" {
 					printFail("镜像港位", "未配置目标镜像仓库 (repository 为空)")
