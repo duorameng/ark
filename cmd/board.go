@@ -17,7 +17,7 @@ import (
 	"ark/pkg/timezone"
 )
 
-func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precision string, retryCount int) {
+func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precision string, retryCount int, shouldClean bool) {
 	category = cfg.Category
 	precision = cfg.TagPrecision
 	if precision == "" {
@@ -27,11 +27,15 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 	if retryCount <= 0 {
 		retryCount = 3
 	}
+	shouldClean = cfg.ShouldCleanAfterPush()
 
 	if envRetry := os.Getenv("ARK_PUSH_RETRY"); envRetry != "" {
 		if val, err := strconv.Atoi(envRetry); err == nil && val > 0 {
 			retryCount = val
 		}
+	}
+	if envClean := os.Getenv("ARK_CLEAN_AFTER_PUSH"); envClean != "" {
+		shouldClean = envClean == "1" || strings.ToLower(envClean) == "true"
 	}
 
 	var positional []string
@@ -48,6 +52,10 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			precision = "minute"
 		case arg == "--hour":
 			precision = "hour"
+		case arg == "--clean":
+			shouldClean = true
+		case arg == "--no-clean" || arg == "--keep-cache":
+			shouldClean = false
 		case arg == "--tag":
 			if i+1 < len(args) {
 				explicitTag = args[i+1]
@@ -91,7 +99,7 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 		if strings.Contains(tag, "-") {
 			category = strings.SplitN(tag, "-", 2)[0]
 		}
-		return tag, category, "custom", retryCount
+		return tag, category, "custom", retryCount, shouldClean
 	}
 
 	// 智能位置参数分析
@@ -110,7 +118,7 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			if strings.Contains(p0, "-") {
 				tag = p0
 				category = strings.SplitN(p0, "-", 2)[0]
-				return tag, category, "custom", retryCount
+				return tag, category, "custom", retryCount, shouldClean
 			}
 			category = p0
 		}
@@ -128,13 +136,13 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			precision = "hour"
 		default:
 			tag = fmt.Sprintf("%s-%s", category, p1)
-			return tag, category, "custom", retryCount
+			return tag, category, "custom", retryCount, shouldClean
 		}
 	}
 
 	timeSuffix := timezone.GenerateTagTimeByPrecision(precision)
 	tag = fmt.Sprintf("%s-%s", category, timeSuffix)
-	return tag, category, precision, retryCount
+	return tag, category, precision, retryCount, shouldClean
 }
 
 func runBoard(args []string, dryRun bool) {
@@ -149,7 +157,7 @@ func runBoard(args []string, dryRun bool) {
 		os.Exit(1)
 	}
 
-	tag, category, precision, retryCount := parseBoardFlags(cfg, args)
+	tag, category, precision, retryCount, shouldClean := parseBoardFlags(cfg, args)
 
 	fmt.Println("================================================================")
 	fmt.Println("          🚢 Ark 班轮装载登船系统 (Golang Engine)               ")
@@ -160,6 +168,7 @@ func runBoard(args []string, dryRun bool) {
 	fmt.Printf("[航次] 舱位配额: 该分类下保留最新 %d 个航次\n", cfg.RetentionCount)
 	fmt.Printf("[容灾] 推送重试配额: 失败自动重试 %d 次 (指数退避)\n", retryCount)
 	fmt.Printf("[安全] 货运封条: %v\n", cfg.Encrypt)
+	fmt.Printf("[存储] 产物清理: 构建推送后自动释放本地镜像与 BuildKit 缓存 (%v)\n", shouldClean)
 
 	cacheDir := filepath.Join(ws, "cache")
 	tmpDir := filepath.Join(ws, "tmp")
@@ -265,6 +274,7 @@ func runBoard(args []string, dryRun bool) {
 		fmt.Fprintf(os.Stderr, "[-] 生成 Dockerfile 失败: %v\n", err)
 		os.Exit(1)
 	}
+	defer os.Remove(dockerfilePath)
 
 	dfContent, _ := os.ReadFile(dockerfilePath)
 	fmt.Println("\n------------------- 装载构型 (Dockerfile) -------------------")
@@ -318,7 +328,52 @@ func runBoard(args []string, dryRun bool) {
 		fmt.Println("未提供通行凭据，跳过远端航次轮转维护。")
 	}
 
+	if shouldClean {
+		fmt.Println("\n------------------- 正在清理本地构建缓存与临时数据 -------------------")
+		fmt.Printf("-> 正在移除本地快照镜像: %s...\n", fullTag)
+		if err := docker.RemoveImage(fullTag); err == nil {
+			fmt.Printf("   ✓ 已成功删除本地 Docker 镜像，释放磁盘空间: %s\n", fullTag)
+		} else {
+			fmt.Printf("   [!] 提示: 本地镜像处理完成: %v\n", err)
+		}
+
+		fmt.Println("-> 正在清理 Docker 悬空镜像与 BuildKit 构建缓存...")
+		_ = docker.PruneDanglingImages()
+		_ = docker.PruneBuildCache()
+		fmt.Println("   ✓ 本地 Docker 构建缓存与中间层清理完成！")
+
+		cleanOrphanCacheFiles(cacheDir, sources)
+	}
+
 	fmt.Println("\n================================================================")
 	fmt.Println("          ⚓ 登船航次全流程圆满完成 (Ark Voyage Ready)            ")
 	fmt.Println("================================================================")
+}
+
+func cleanOrphanCacheFiles(cacheDir string, sources []config.Source) {
+	validFiles := make(map[string]bool)
+	validFiles["manifest.json"] = true
+	for _, s := range sources {
+		validFiles[s.ID+".dat"] = true
+		validFiles[s.ID+".tar"] = true
+	}
+
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		return
+	}
+
+	cleanedCount := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if !validFiles[e.Name()] {
+			_ = os.Remove(filepath.Join(cacheDir, e.Name()))
+			cleanedCount++
+		}
+	}
+	if cleanedCount > 0 {
+		fmt.Printf("   ✓ 已清理 %d 个陈旧废弃的货舱数据缓存\n", cleanedCount)
+	}
 }

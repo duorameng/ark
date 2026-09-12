@@ -3,6 +3,8 @@
   "category": "cate1",
   "retention_count": 5,
   "encrypt": true,
+  "clean_after_push": true,
+  "push_retry": 3,
   "sources": [
     {
       "id": "mock_static",

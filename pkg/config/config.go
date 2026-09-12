@@ -21,13 +21,23 @@ type Config struct {
 	Category       string   `json:"category"`
 	RetentionCount int      `json:"retention_count"`
 	Encrypt        bool     `json:"encrypt"`
-	TagPrecision   string   `json:"tag_precision,omitempty"` // 时间标签精度: day(天) / second(秒，默认) / minute(分)
-	PushRetry      int      `json:"push_retry,omitempty"`    // docker push 失败重试次数 (默认 3 次)
+	TagPrecision   string   `json:"tag_precision,omitempty"`    // 时间标签精度: day(天) / second(秒，默认) / minute(分)
+	PushRetry      int      `json:"push_retry,omitempty"`       // docker push 失败重试次数 (默认 3 次)
+	CleanAfterPush *bool    `json:"clean_after_push,omitempty"` // build/push 完成后是否自动清理本地镜像与构建缓存 (默认 true)
 	Sources        []Source `json:"sources"`
+}
+
+// ShouldCleanAfterPush 判断构建推送后是否需要清理本地镜像与缓存
+func (c *Config) ShouldCleanAfterPush() bool {
+	if c.CleanAfterPush != nil {
+		return *c.CleanAfterPush
+	}
+	return true
 }
 
 // DefaultConfig 返回预设默认配置
 func DefaultConfig() *Config {
+	defaultClean := true
 	return &Config{
 		Repository:     "ghcr.io/duorameng/ark",
 		Category:       "vps",
@@ -35,6 +45,7 @@ func DefaultConfig() *Config {
 		Encrypt:        true,
 		TagPrecision:   "second",
 		PushRetry:      3,
+		CleanAfterPush: &defaultClean,
 		Sources:        make([]Source, 0),
 	}
 }

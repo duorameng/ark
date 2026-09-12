@@ -127,3 +127,22 @@ func ExtractCargoFromImage(imageTag, outDir string) error {
 
 	return nil
 }
+
+// RemoveImage 移除指定的本地镜像，释放磁盘存储
+func RemoveImage(tag string) error {
+	cmd := exec.Command("docker", "rmi", "-f", tag)
+	return cmd.Run()
+}
+
+// PruneDanglingImages 清理本地未打标的悬空无用镜像 (<none>:<none>)
+func PruneDanglingImages() error {
+	cmd := exec.Command("docker", "image", "prune", "-f")
+	return cmd.Run()
+}
+
+// PruneBuildCache 清理 BuildKit 构建缓存
+func PruneBuildCache() error {
+	cmd := exec.Command("docker", "builder", "prune", "-f")
+	return cmd.Run()
+}
+
