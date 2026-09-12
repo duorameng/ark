@@ -6,16 +6,114 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"ark/pkg/archive"
 	"ark/pkg/config"
 	"ark/pkg/docker"
 	"ark/pkg/github"
 	"ark/pkg/hash"
+	"ark/pkg/timezone"
 )
 
+func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precision string) {
+	category = cfg.Category
+	precision = cfg.TagPrecision
+	if precision == "" {
+		precision = "second"
+	}
+
+	var positional []string
+	explicitTag := ""
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--day" || arg == "-d":
+			precision = "day"
+		case arg == "--second" || arg == "-s":
+			precision = "second"
+		case arg == "--minute" || arg == "-m":
+			precision = "minute"
+		case arg == "--hour":
+			precision = "hour"
+		case arg == "--tag":
+			if i+1 < len(args) {
+				explicitTag = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(arg, "--tag="):
+			explicitTag = strings.TrimPrefix(arg, "--tag=")
+		case arg == "--precision" || arg == "-p" || arg == "--time-format" || arg == "-t":
+			if i+1 < len(args) {
+				precision = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(arg, "--precision="):
+			precision = strings.TrimPrefix(arg, "--precision=")
+		case strings.HasPrefix(arg, "-p="):
+			precision = strings.TrimPrefix(arg, "-p=")
+		case strings.HasPrefix(arg, "--time-format="):
+			precision = strings.TrimPrefix(arg, "--time-format=")
+		default:
+			positional = append(positional, arg)
+		}
+	}
+
+	if explicitTag != "" {
+		tag = explicitTag
+		if strings.Contains(tag, "-") {
+			category = strings.SplitN(tag, "-", 2)[0]
+		}
+		return tag, category, "custom"
+	}
+
+	// 智能位置参数分析
+	if len(positional) == 1 {
+		p0 := positional[0]
+		switch strings.ToLower(p0) {
+		case "day", "d", "date", "天", "日":
+			precision = "day"
+		case "second", "sec", "s", "秒":
+			precision = "second"
+		case "minute", "min", "m", "分":
+			precision = "minute"
+		case "hour", "h", "时":
+			precision = "hour"
+		default:
+			if strings.Contains(p0, "-") {
+				tag = p0
+				category = strings.SplitN(p0, "-", 2)[0]
+				return tag, category, "custom"
+			}
+			category = p0
+		}
+	} else if len(positional) >= 2 {
+		category = positional[0]
+		p1 := positional[1]
+		switch strings.ToLower(p1) {
+		case "day", "d", "date", "天", "日":
+			precision = "day"
+		case "second", "sec", "s", "秒":
+			precision = "second"
+		case "minute", "min", "m", "分":
+			precision = "minute"
+		case "hour", "h", "时":
+			precision = "hour"
+		default:
+			tag = fmt.Sprintf("%s-%s", category, p1)
+			return tag, category, "custom"
+		}
+	}
+
+	timeSuffix := timezone.GenerateTagTimeByPrecision(precision)
+	tag = fmt.Sprintf("%s-%s", category, timeSuffix)
+	return tag, category, precision
+}
+
 func runBoard(args []string, dryRun bool) {
+	cleanedArgs, cliKey := extractKeyFlag(args)
+	args = cleanedArgs
+
 	ws := getWorkspaceRoot()
 	configPath := filepath.Join(ws, "config.json")
 	cfg, err := config.Load(configPath)
@@ -24,33 +122,14 @@ func runBoard(args []string, dryRun bool) {
 		os.Exit(1)
 	}
 
-	category := cfg.Category
-	tagParam := ""
-	if len(args) > 0 {
-		tagParam = args[0]
-	}
-
-	var tag string
-	if tagParam != "" {
-		if strings.Contains(tagParam, "-") && len(strings.Split(tagParam, "-")) >= 3 {
-			tag = tagParam
-			category = strings.SplitN(tagParam, "-", 2)[0]
-		} else {
-			category = tagParam
-			tag = fmt.Sprintf("%s-%s", category, time.Now().Format("20060102-150405"))
-		}
-	} else {
-		tag = fmt.Sprintf("%s-%s", category, time.Now().Format("20060102-150405"))
-	}
-
-	categoryLatest := fmt.Sprintf("%s-latest", category)
+	tag, category, precision := parseBoardFlags(cfg, args)
 
 	fmt.Println("================================================================")
 	fmt.Println("          🚢 Ark 班轮装载登船系统 (Golang Engine)               ")
 	fmt.Println("================================================================")
 	fmt.Printf("[航次] 目的港位: %s\n", cfg.Repository)
 	fmt.Printf("[场景] 所属分类: %s\n", category)
-	fmt.Printf("[航次] 班次编号: %s 与 %s\n", tag, categoryLatest)
+	fmt.Printf("[航次] 班次编号: %s (时间精度: %s)\n", tag, precision)
 	fmt.Printf("[航次] 舱位配额: 该分类下保留最新 %d 个航次\n", cfg.RetentionCount)
 	fmt.Printf("[安全] 货运封条: %v\n", cfg.Encrypt)
 
@@ -61,7 +140,7 @@ func runBoard(args []string, dryRun bool) {
 
 	var sealPass []byte
 	if cfg.Encrypt {
-		pass, err := resolveSealKey(ws, true)
+		pass, err := resolveSealKey(ws, true, cliKey)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[-] 获取安全封条密钥失败: %v\n", err)
 			os.Exit(1)
@@ -145,7 +224,7 @@ func runBoard(args []string, dryRun bool) {
 			Path:      srcPath,
 			TreeHash:  dirInfo.Hash,
 			LayerFile: filepath.Base(layerFile),
-			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+			UpdatedAt: timezone.FormatDefault(timezone.Now()),
 		}
 	}
 
@@ -171,9 +250,8 @@ func runBoard(args []string, dryRun bool) {
 
 	fmt.Println("\n==> 正在使用 BuildKit 进行班轮集装箱独立分层快照构建...")
 	fullTag := fmt.Sprintf("%s:%s", cfg.Repository, tag)
-	latestTag := fmt.Sprintf("%s:%s", cfg.Repository, categoryLatest)
 
-	if err := docker.Build(dockerfilePath, ws, fullTag, latestTag); err != nil {
+	if err := docker.Build(dockerfilePath, ws, fullTag); err != nil {
 		fmt.Fprintf(os.Stderr, "[-] Docker 构建失败: %v\n", err)
 		os.Exit(1)
 	}
@@ -195,14 +273,13 @@ func runBoard(args []string, dryRun bool) {
 		fmt.Println("[!] 提示: 未检测到通行凭据。如需启航，请在 .env 中配置 GH_TOKEN。")
 	}
 
-	fmt.Printf("\n==> 班轮正在出港登船: %s 与 %s...\n", fullTag, latestTag)
+	fmt.Printf("\n==> 班轮正在出港登船: %s...\n", fullTag)
 	fmt.Println("【免复传机制】：封条未变动的集装箱将显示 'Layer already exists'，0 流量瞬间交付！")
 
 	if err := docker.Push(fullTag); err != nil {
 		fmt.Fprintf(os.Stderr, "[-] 推送 %s 失败: %v\n", fullTag, err)
 		os.Exit(1)
 	}
-	_ = docker.Push(latestTag)
 	fmt.Println("✓ 航次交付登船成功！")
 
 	fmt.Printf("\n------------------- 正在维护 [%s] 分类的历史航次配额 -------------------\n", category)

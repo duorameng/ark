@@ -10,9 +10,13 @@ import (
 	"ark/pkg/archive"
 	"ark/pkg/config"
 	"ark/pkg/docker"
+	"ark/pkg/github"
 )
 
 func runLand(args []string) {
+	cleanedArgs, cliKey := extractKeyFlag(args)
+	args = cleanedArgs
+
 	ws := getWorkspaceRoot()
 	configPath := filepath.Join(ws, "config.json")
 	cfg, err := config.Load(configPath)
@@ -27,15 +31,31 @@ func runLand(args []string) {
 
 	if len(args) > 0 {
 		param := args[0]
-		if strings.Contains(param, "-") {
+		if strings.Contains(param, "-") && len(strings.Split(param, "-")) >= 3 {
 			tag = param
 			category = strings.SplitN(param, "-", 2)[0]
 		} else {
 			category = param
-			tag = fmt.Sprintf("%s-latest", category)
 		}
-	} else {
-		tag = fmt.Sprintf("%s-latest", category)
+	}
+
+	// 取消固定 latest 标签：未显式指定具体时间戳航次时，自动通过 API 检索该分类下最新航次
+	if tag == "" {
+		token := loadToken(ws)
+		if token != "" {
+			fmt.Printf("[航次] 正在查询分类 [%s] 在远端港口的最新航次...\n", category)
+			ghClient := github.NewClient(cfg.Repository, token)
+			if latestTag, err := ghClient.GetLatestTag(category); err == nil {
+				tag = latestTag
+				fmt.Printf("[航次] 自动定位最新航次: %s\n", tag)
+			} else {
+				fmt.Fprintf(os.Stderr, "[-] 自动检索最新航次失败: %v\n请通过 'ark land <具体航次标签>' 指定航次\n", err)
+				os.Exit(1)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[-] 未配置 GitHub Token 且未指定具体航次标签。\n请使用 'ark land %s-<日期标签>' 指定具体航次，或配置 GH_TOKEN。\n", category)
+			os.Exit(1)
+		}
 	}
 
 	if len(args) > 1 {
@@ -57,7 +77,7 @@ func runLand(args []string) {
 
 	var sealPass []byte
 	if cfg.Encrypt {
-		pass, err := resolveSealKey(ws, false)
+		pass, err := resolveSealKey(ws, false, cliKey)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[-] 获取安全封条密钥失败: %v\n", err)
 			os.Exit(1)

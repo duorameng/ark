@@ -21,6 +21,7 @@ type Config struct {
 	Category       string   `json:"category"`
 	RetentionCount int      `json:"retention_count"`
 	Encrypt        bool     `json:"encrypt"`
+	TagPrecision   string   `json:"tag_precision,omitempty"` // 时间标签精度: day(天) / second(秒，默认) / minute(分)
 	Sources        []Source `json:"sources"`
 }
 
@@ -31,6 +32,7 @@ func DefaultConfig() *Config {
 		Category:       "vps",
 		RetentionCount: 5,
 		Encrypt:        true,
+		TagPrecision:   "second",
 		Sources:        make([]Source, 0),
 	}
 }

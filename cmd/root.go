@@ -3,12 +3,13 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"runtime"
 
 	"ark/pkg/update"
 )
 
 // AppVersion 当前应用程序版本号
-var AppVersion = "v1.0.0"
+var AppVersion = "v1.1.0"
 
 // Execute 统一命令分发与调度入口
 func Execute(version string) {
@@ -41,12 +42,14 @@ func Execute(version string) {
 		runList(args)
 	case "keygen", "密钥":
 		runKeygen(args)
+	case "check", "doctor", "test", "检查", "体检":
+		runCheck(args)
 	case "update", "升级", "self-update":
 		runUpdate(args)
 	case "completion", "补全":
 		runCompletion(args)
 	case "version", "-v", "--version", "版本":
-		fmt.Printf("ark version %s (%s/%s)\n", AppVersion, os.Getenv("GOOS"), os.Getenv("GOARCH"))
+		fmt.Printf("ark version %s (%s/%s)\n", AppVersion, runtime.GOOS, runtime.GOARCH)
 	case "help", "--help", "-h", "帮助":
 		PrintHelp()
 	default:
@@ -64,6 +67,7 @@ func PrintHelp() {
 	fmt.Println("  ark <command> [arguments...]")
 	fmt.Println()
 	fmt.Println("可用指令 (Available Commands):")
+	fmt.Println("  check       全面测试所有配置是否正确 (语法、货舱路径、加密封条与云端凭据)")
 	fmt.Println("  board       打包各舱位目录，施加 AES-256 安全密闭封条并推送到云端班轮 (BuildKit COPY --link)")
 	fmt.Println("  land        从港口调取班轮镜像快照，解封解密并完整归位货物")
 	fmt.Println("  unpack      无需 Docker 引擎，单二进制直接从本地快照包 (.dat/.tar) 独立解封还原货物")
@@ -77,11 +81,16 @@ func PrintHelp() {
 	fmt.Println("  help        显示本帮助指南")
 	fmt.Println()
 	fmt.Println("示例 (Examples):")
+	fmt.Println("  ark check                     # 测试所有配置、各货舱路径与加密封条是否全部健全")
+	fmt.Println("  ark check --key \"<口令>\"       # 指定自定义口令进行闭环加密解密往返自测")
 	fmt.Println("  ark scan /root/workspace      # 自动探测子工程，分析冷热变动率并智能排序")
-	fmt.Println("  ark board                     # 使用 config.json 默认分类执行装载登船")
+	fmt.Println("  ark board                     # 默认登船 (按秒级时间戳: {分类}-YYYYMMDD-HHMMSS)")
+	fmt.Println("  ark board day                 # 快捷按天精确度登船 (生成: {分类}-YYYYMMDD)")
+	fmt.Println("  ark board db day              # 指定分类为 db 并按天生成航次标签 (db-YYYYMMDD)")
+	fmt.Println("  ark board --precision minute  # 按分钟精度生成航次标签 ({分类}-YYYYMMDD-HHMM)")
 	fmt.Println("  ark board db                  # 临时指定分类为 db 范围执行登船")
 	fmt.Println("  ark list                      # 检索港口所有航次记录")
-	fmt.Println("  ark land vps                  # 靠岸卸载还原 vps 分类的最新航次 (vps-latest)")
+	fmt.Println("  ark land vps                  # 靠岸卸载还原 vps 分类的最新航次 (自动检索远端最新航次)")
 	fmt.Println("  ark land vps-20260912-140000  # 靠岸卸载还原指定历史日期的航次")
 	fmt.Println("  ark unpack cache/postgres.dat # 零 Docker 依赖，直接解密封并恢复 postgres 数据")
 	fmt.Println("  ark update                    # 检查最新版本并自动通过国内镜像源极速升级自身")

@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"ark/pkg/timezone"
 )
 
 // VersionInfo GitHub Packages 容器版本结构
@@ -143,7 +145,7 @@ func (c *Client) PruneCategoryVersions(category string, retentionCount int) erro
 	for _, v := range toDelete {
 		tags := strings.Join(v.Metadata.Container.Tags, ", ")
 		fmt.Printf("-> 正在归档 [%s] 过期航次 ID: %d [Tags: %s] (创建于: %s)...\n",
-			category, v.ID, tags, v.CreatedAt.Format("2006-01-02 15:04:05"))
+			category, v.ID, tags, timezone.FormatDefault(v.CreatedAt))
 
 		delURL := fmt.Sprintf("https://api.github.com/user/packages/container/%s/versions/%d", c.Package, v.ID)
 		delReq, err := http.NewRequest("DELETE", delURL, nil)
@@ -179,7 +181,7 @@ func (c *Client) PrintCategoryVersions(categoryFilter string) error {
 	}
 
 	fmt.Println()
-	fmt.Printf("%-10s %-28s %-24s %s\n", "分类", "航次标签 (Tag)", "创建日期 (UTC)", "版本 ID")
+	fmt.Printf("%-10s %-28s %-24s %s\n", "分类", "航次标签 (Tag)", "创建日期 (UTC+8 / CST)", "版本 ID")
 	fmt.Println(strings.Repeat("-", 80))
 
 	count := 0
@@ -192,7 +194,7 @@ func (c *Client) PrintCategoryVersions(categoryFilter string) error {
 					fmt.Printf("%-10s %-28s %-24s %d\n",
 						fmt.Sprintf("[%s]", cat),
 						tag,
-						ver.CreatedAt.Format("2006-01-02 15:04:05"),
+						timezone.FormatDefault(ver.CreatedAt),
 						ver.ID,
 					)
 					count++
@@ -204,3 +206,27 @@ func (c *Client) PrintCategoryVersions(categoryFilter string) error {
 	fmt.Printf("共找到 %d 个匹配的航次记录。\n", count)
 	return nil
 }
+
+// GetLatestTag 自动从远端港口获取指定分类下创建时间最新的航次 Tag (无须依赖 latest 标签)
+func (c *Client) GetLatestTag(category string) (string, error) {
+	versions, err := c.ListVersions()
+	if err != nil {
+		return "", err
+	}
+
+	// 按创建时间降序排序 (最新的排前面)
+	sort.SliceStable(versions, func(i, j int) bool {
+		return versions[i].CreatedAt.After(versions[j].CreatedAt)
+	})
+
+	for _, ver := range versions {
+		for _, tag := range ver.Metadata.Container.Tags {
+			if strings.HasPrefix(tag, category+"-") && !strings.HasSuffix(tag, "-latest") {
+				return tag, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("远端港口暂未发现分类 [%s] 的任何历史航次", category)
+}
+

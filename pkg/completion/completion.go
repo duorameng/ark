@@ -15,6 +15,7 @@ type CommandInfo struct {
 
 // AllCommands 注册的全部英文一级指令与描述
 var AllCommands = []CommandInfo{
+	{Name: "check", Desc: "全面测试所有配置是否正确 (语法、货舱路径、加密封条与云端凭据)"},
 	{Name: "board", Desc: "打包各舱位目录并推送到云端班轮 (BuildKit COPY --link)"},
 	{Name: "land", Desc: "从港口调取镜像快照并解密还原归位货物"},
 	{Name: "unpack", Desc: "无需 Docker 引擎，单二进制独立解密还原货物"},
@@ -52,7 +53,7 @@ _ark_completion() {
     case "${prev}" in
         board|land|list)
             # Suggest categories or historical tags
-            COMPREPLY=( $(compgen -W "vps db default latest" -- "$cur") )
+            COMPREPLY=( $(compgen -W "vps db default" -- "$cur") )
             return 0
             ;;
         unpack|scan)

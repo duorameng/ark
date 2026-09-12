@@ -12,6 +12,9 @@ import (
 )
 
 func runUnpack(args []string) {
+	cleanedArgs, cliKey := extractKeyFlag(args)
+	args = cleanedArgs
+
 	ws := getWorkspaceRoot()
 	targetPath := "cache"
 	destDir := ""
@@ -32,7 +35,7 @@ func runUnpack(args []string) {
 	fmt.Println("================================================================")
 
 	var sealPass []byte
-	if pass, err := resolveSealKey(ws, false); err == nil {
+	if pass, err := resolveSealKey(ws, false, cliKey); err == nil {
 		sealPass = pass
 	}
 

@@ -26,8 +26,8 @@
    - 采用 Docker BuildKit `# syntax=docker/dockerfile:1.4` 与 **`COPY --link`**。
    - 每个舱位封装为完全独立的集装箱 Snapshot。未变动的舱位推送到 GHCR 时远端返回 `Layer already exists`，**0 流量出海，远端 0 额外存储开销**。
 
-6. **场景分类与日期版本控制 (Category + Date Tags)**：
-   - 航次标签规范为：`{分类}-{年月日-时分秒}`（例如 `vps-20260912-140000`），并同步更新 `{分类}-latest`。
+6. **场景分类与日期精确版本控制 (Category + Timestamp Tags)**：
+   - 航次标签严格规范为：`{分类}-{年月日-时分秒}`（例如 `vps-20260912-140000`），**不生成任何 latest 标签**，确保每一航次均有确切不可变的时间戳版本。
    - 同一个镜像仓库（`ghcr.io/duorameng/ark`）可并行容纳多个独立业务场景（如 `vps`、`nas`、`db`），互不覆盖干扰。
 
 7. **分类作用域历史轮转 (Category-Scoped Pruning)**：
@@ -66,26 +66,58 @@ ark/
 
 ## 命令行操作指南
 
-### 1. 全自动扫描与清单生成
-### 1. 全自动扫描与清单生成 (Auto Scan & Rank)
+### 1. 系统与配置自检体检 (Diagnostic Check)
+```bash
+# 全面扫描测试当前所有配置、JSON语法、货舱物理路径、加密封条与云端凭据:
+ark check
+
+# 支持指定自定义口令进行端到端闭环加密/解密往返自测:
+ark check --key "MySecretPass"
+
+# 亦可使用通用别名:
+ark doctor  # 或 ark test
+```
+
+### 2. 封条密钥管理与自定义口令 (Key Management)
+```bash
+# 方式 A (推荐)：指定自定义口令（磁盘自动使用密码学哈希非明文存储，跨机器还原免拷贝文件）:
+ark keygen "MySecretPass123"
+
+# 方式 B：自动生成 32 字节高强度真随机密钥:
+ark keygen
+
+# 提示: 在任意命令中均可直接通过 --key 参数指定口令 (例如免配置直接恢复):
+ark land vps --key "MySecretPass123"
+```
+
+### 3. 全自动扫描与清单生成 (Auto Scan & Rank)
 ```bash
 # 全自动探测总目录下所有子工程，按冷热度排序并写入 config.json
 ark scan /root/workspace
 ```
 
-### 2. 登船推送 (Ship Cargo)
+### 4. 登船推送 (Ship Cargo)
 ```bash
 # 模拟试航 (DRY RUN): 验证哈希对比、打包加密与 Dockerfile 生成，不实际上传
 ark dry
 
-# 使用默认分类 (vps) 登船 -> 生成 vps-YYYYMMDD-HHMMSS 与 vps-latest
+# 默认登船: 生成精确到秒的航次标签 (如 vps-20260912-153334)
 ark board
 
-# 临时指定分类登船 (例如 db) -> 生成 db-YYYYMMDD-HHMMSS 与 db-latest
-ark board db
+# 快捷按天生成航次标签 (如 vps-20260912，适合每日定时备份)
+ark board day
+# 或使用参数: ark board --day (或 -d)
+
+# 指定分类为 db 并按天生成航次标签 (生成: db-20260912)
+ark board db day
+
+# 指定时间精度为分 (如 vps-20260912-1533)
+ark board --precision minute
+
+# 亦可在 config.json 中永久配置默认精度: "tag_precision": "day"
 ```
 
-### 3. 查验港口航次 (List Voyages)
+### 5. 查验港口航次 (List Voyages)
 ```bash
 # 查验港口所有航次
 ark list
@@ -94,16 +126,16 @@ ark list
 ark list vps
 ```
 
-### 4. 下船还原货物 (Restore Cargo)
+### 6. 下船还原货物 (Restore Cargo)
 ```bash
-# 卸载指定分类的最新班次 (从 vps-latest 还原):
+# 卸载指定分类的最新班次 (自动检索远端该分类最新时间戳航次并还原):
 ark land vps
 
 # 卸载指定日期的历史班次到指定目录:
 ark land vps-20260912-140000 /root/workspace/restored_vps
 ```
 
-### 5. 独立解封 (Zero-Docker Restore)
+### 7. 独立解封 (Zero-Docker Restore)
 ```bash
 # 直接解封单个集装箱 (例如恢复 postgres 数据，UID/GID 严格还原为 70:0)
 ark unpack cache/postgres.dat /root/workspace/pg_restored
@@ -112,7 +144,7 @@ ark unpack cache/postgres.dat /root/workspace/pg_restored
 ark unpack cache /root/workspace/all_restored
 ```
 
-### 6. 自我升级 (Self-Update with CDN Failover)
+### 8. 自我升级 (Self-Update with CDN Failover)
 ```bash
 # 自动检测 GitHub 最新 Release 并通过国内镜像源自动容灾重试下载更新自身:
 ark update
@@ -124,7 +156,7 @@ ark version
 ark update https://github.com/duorameng/ark/releases/download/v1.0.0/ark-linux-amd64
 ```
 
-### 7. Shell 自动补全 (Auto-Completion)
+### 9. Shell 自动补全 (Auto-Completion)
 ```bash
 # 一键自动安装补全到当前 Shell 配置文件 (~/.bashrc 或 ~/.zshrc):
 ark completion install
