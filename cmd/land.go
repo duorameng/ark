@@ -10,9 +10,6 @@ import (
 
 	"ark/pkg/archive"
 	"ark/pkg/config"
-	"ark/pkg/docker"
-	"ark/pkg/github"
-	"ark/pkg/oci"
 )
 
 func runLand(args []string) {
@@ -79,23 +76,18 @@ func runLand(args []string) {
 		fmt.Printf("[航次] 匹配配置中固定航次标签: %s\n", tag)
 	}
 
-	// 若未显式指定具体时间戳航次时：
+	provider := activeTarget.Provider()
+	ctx := context.Background()
+
+	// 若未显式指定具体时间戳航次时，委托 Provider 智能解析最新航次：
 	if tag == "" {
-		if activeTarget.IsGHCR && token != "" {
-			fmt.Printf("[航次] 正在查询分类 [%s] 在远端港口的最新航次...\n", category)
-			ghClient := github.NewClient(cfg.Repository, token)
-			if latestTag, err := ghClient.GetLatestTag(category); err == nil {
-				tag = latestTag
-				fmt.Printf("[航次] 自动定位最新航次: %s\n", tag)
-			} else {
-				// GitHub 检索分类标签失败时，尝试 fallback 到 latest
-				tag = "latest"
-				fmt.Printf("[航次] 自动检索历史航次失败，尝试调取固定最新标签: %s\n", tag)
-			}
+		fmt.Printf("[航次] 正在查询分类 [%s] 在远端港口的目标航次...\n", category)
+		if latestTag, err := provider.ResolveLatestTag(ctx, category); err == nil && latestTag != "" {
+			tag = latestTag
+			fmt.Printf("[航次] 自动定位最新航次: %s\n", tag)
 		} else {
-			// 非 GHCR 港口 (如阿里云 ACR) 或未配置 GH_TOKEN 时，默认调取固定 latest 标签
 			tag = "latest"
-			fmt.Printf("[航次] 未指定具体时间戳航次，默认调取固定最新标签: %s\n", tag)
+			fmt.Printf("[航次] 未检索到时间戳历史航次，调取固定最新标签: %s\n", tag)
 		}
 	}
 
@@ -118,14 +110,12 @@ func runLand(args []string) {
 	fmt.Println("================================================================")
 	fmt.Println("          ⚓ Ark 班轮靠岸下船系统 (Landing System)              ")
 	fmt.Println("================================================================")
-	fmt.Printf("[港位] 来源港位: %s\n", cfg.Repository)
+	fmt.Printf("[港位] 来源港位: %s (%s)\n", provider.Repository(), provider.DisplayName())
+	fmt.Printf("[主机] 港口主机: %s\n", provider.Host())
 	fmt.Printf("[场景] 所属分类: %s\n", category)
 	fmt.Printf("[航次] 检索标签: %s\n", tag)
-	engineDesc := "纯 Go 原生 OCI 流式直取 (Zero-Docker Pipeline, 无需 Docker 引擎)"
-	if cliEngine == "docker" {
-		engineDesc = "Docker 引擎调取与导出"
-	}
-	fmt.Printf("[引擎] 调取引擎: %s (%s)\n", strings.ToUpper(cliEngine), engineDesc)
+	_ = cliEngine // 保留参数兼容性
+	fmt.Println("[引擎] 调取引擎: 原生 OCI 流式直取 (Zero-Docker Pipeline, 无需 Docker)")
 	fmt.Printf("[卸货] 交付目的地: %s\n", destDir)
 	fmt.Printf("[安全] 封条状态: %v\n", cfg.Encrypt)
 
@@ -137,47 +127,28 @@ func runLand(args []string) {
 	_ = os.MkdirAll(tmpLandDir, 0755)
 	defer os.RemoveAll(tmpLandDir)
 
-	extracted := false
-	if cliEngine == "oci" {
-		regUser := resolveRegistryUser(cfg.Repository)
-		ociClient, err := oci.NewClient(cfg.Repository, regUser, token)
-		if err == nil {
-			ctx := context.Background()
-			fmt.Printf("\n==> 正在通过原生 OCI 协议调取班轮清单: %s...\n", fullImage)
-			mf, err := ociClient.GetManifest(ctx, tag)
-			if err == nil && mf != nil && len(mf.Layers) > 0 {
-				fmt.Printf("✓ 成功获取清单，包含 %d 个货舱集装箱分层，开始流式调取与提取...\n", len(mf.Layers))
-				allOk := true
-				for idx, l := range mf.Layers {
-					fmt.Printf("-> 正在流式提取货舱分层 [%d/%d] (指纹: %s...)\n", idx+1, len(mf.Layers), l.Digest[:19])
-					if err := ociClient.DownloadBlobAndExtractCargo(ctx, l.Digest, tmpLandDir, nil); err != nil {
-						fmt.Printf("   [-] 提取分层失败: %v\n", err)
-						allOk = false
-						break
-					}
-				}
-				if allOk {
-					extracted = true
-					fmt.Println("✓ 原生 OCI 集装箱卸载提取成功 (零 Docker 守护进程依赖)！")
-				}
-			} else {
-				fmt.Printf("[!] 提示: 原生 OCI 清单解析未完成 (%v)，尝试降级至 Docker 引擎...\n", err)
-			}
-		}
+	ociClient, err := provider.GetOCIClient(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[-] 无法初始化 OCI 客户端: %v\n", err)
+		os.Exit(1)
 	}
 
-	if !extracted {
-		fmt.Printf("\n==> 正在靠岸进港，使用 Docker 调取班轮快照 %s...\n", fullImage)
-		if err := docker.Pull(fullImage); err != nil {
-			fmt.Printf("[!] 提示: 远端调取未成功，尝试使用本地停泊快照: %v\n", err)
-		}
+	fmt.Printf("\n==> 正在通过原生 OCI 协议调取班轮清单: %s...\n", fullImage)
+	mf, err := ociClient.GetManifest(ctx, tag)
+	if err != nil || mf == nil || len(mf.Layers) == 0 {
+		fmt.Fprintf(os.Stderr, "[-] 调取班轮清单失败: %v\n", err)
+		os.Exit(1)
+	}
 
-		fmt.Println("==> 正在吊装卸载集装箱...")
-		if err := docker.ExtractCargoFromImage(fullImage, tmpLandDir); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 导出集装箱失败: %v\n", err)
+	fmt.Printf("✓ 成功获取清单，包含 %d 个货舱集装箱分层，开始流式调取与提取...\n", len(mf.Layers))
+	for idx, l := range mf.Layers {
+		fmt.Printf("-> 正在流式提取货舱分层 [%d/%d] (指纹: %s...)\n", idx+1, len(mf.Layers), l.Digest[:19])
+		if err := ociClient.DownloadBlobAndExtractCargo(ctx, l.Digest, tmpLandDir, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 提取货舱分层失败: %v\n", err)
 			os.Exit(1)
 		}
 	}
+	fmt.Println("✓ 原生 OCI 集装箱卸载提取成功 (零 Docker 守护进程依赖)！")
 
 	fmt.Println("\n------------------- 正在开封集装箱并归位货物 -------------------")
 	folderNameMap := make(map[string]string)

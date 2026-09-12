@@ -1,17 +1,18 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
-
-	"ark/pkg/github"
 )
 
 func runList(args []string) {
-	cleanedArgs, cliRepo := extractRepoFlag(args)
+	cleanedArgs, cliTarget := extractTargetFlag(args)
+	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
+	loadEnvFile(ws)
 	cfg, _, _ := LoadAppConfig(ws, cliRepo)
 
 	categoryFilter := ""
@@ -19,23 +20,26 @@ func runList(args []string) {
 		categoryFilter = args[0]
 	}
 
-	token := loadToken(ws)
-	if token == "" {
-		fmt.Fprintln(os.Stderr, "[-] 未检测到通行凭据 GH_TOKEN，无法检索远端港口。请在 .env 中配置。")
+	targets := resolveRegistryTargets(ws, cliTarget, cliRepo, cfg.Repository)
+	if len(targets) == 0 {
+		fmt.Fprintln(os.Stderr, "[-] 未能识别到有效的镜像仓库港位。请检查 ark.toml 或 .env 配置。")
 		os.Exit(1)
 	}
 
 	fmt.Println("================================================================")
-	fmt.Println("          ⚓ Ark 港口航次查询终端 (Golang Engine)               ")
+	fmt.Println("          ⚓ Ark 港口航次查询终端 (Registry Query)             ")
 	fmt.Println("================================================================")
-	fmt.Printf("[港位] 目标仓库: %s\n", cfg.Repository)
 	if categoryFilter != "" {
 		fmt.Printf("[筛选] 指定分类: %s\n", categoryFilter)
 	}
 
-	ghClient := github.NewClient(cfg.Repository, token)
-	if err := ghClient.PrintCategoryVersions(categoryFilter); err != nil {
-		fmt.Fprintf(os.Stderr, "[-] 查询失败: %v\n", err)
-		os.Exit(1)
+	ctx := context.Background()
+	for _, target := range targets {
+		fmt.Printf("\n--- 港位: %s (%s) ---\n", target.DisplayName, target.Repository)
+		provider := target.Provider()
+		if err := provider.ListVersions(ctx, categoryFilter); err != nil {
+			fmt.Printf("[-] 查询 [%s] 航次失败: %v\n", target.DisplayName, err)
+		}
 	}
 }
+

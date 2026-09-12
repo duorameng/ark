@@ -12,8 +12,6 @@ import (
 
 	"ark/pkg/archive"
 	"ark/pkg/config"
-	"ark/pkg/docker"
-	"ark/pkg/github"
 	"ark/pkg/hash"
 	"ark/pkg/oci"
 	"ark/pkg/timezone"
@@ -206,6 +204,7 @@ func runBoard(args []string, dryRun bool) {
 	cleanedArgs, cliTarget := extractTargetFlag(cleanedArgs)
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
 	args = cleanedArgs
+	_ = cliEngine
 
 	ws := getWorkspaceRoot()
 	cfg, hasConfigFile, err := LoadAppConfig(ws, cliRepo)
@@ -242,11 +241,7 @@ func runBoard(args []string, dryRun bool) {
 		fmt.Printf("[航次] 班次编号: %s (时间精度: %s)\n", tag, precision)
 		fmt.Printf("[航次] 舱位配额: 该分类下保留最新 %d 个航次\n", cfg.RetentionCount)
 	}
-	engineDesc := "纯 Go 原生 OCI 极速直推 (Zero-Docker Pipeline, 0 额外落盘, 0 无效压缩)"
-	if cliEngine == "docker" {
-		engineDesc = "Docker BuildKit 构建流水线 (传统容器引擎)"
-	}
-	fmt.Printf("[引擎] 交付引擎: %s (%s)\n", strings.ToUpper(cliEngine), engineDesc)
+	fmt.Println("[引擎] 交付引擎: 纯 Go 原生 OCI 极速直推 (Zero-Docker Pipeline, 0 额外落盘, 0 无效压缩)")
 	fmt.Printf("[容灾] 推送重试配额: 失败自动重试 %d 次 (指数退避)\n", retryCount)
 	fmt.Printf("[安全] 货运封条: %v\n", cfg.Encrypt)
 	cleanModeStr := "释放本地构建临时数据 (保留增量缓存)"
@@ -261,12 +256,6 @@ func runBoard(args []string, dryRun bool) {
 	tmpDir := filepath.Join(ws, "tmp")
 	_ = os.MkdirAll(cacheDir, 0755)
 	_ = os.MkdirAll(tmpDir, 0755)
-
-	if cliEngine == "docker" && shouldClean {
-		fmt.Println("-> 正在执行构建前磁盘预清理 (自动释放历史中断或旧版本悬空层与构建缓存)...")
-		_ = docker.PruneDanglingImages()
-		_ = docker.PruneBuildCache()
-	}
 
 	var sealPass []byte
 	if cfg.Encrypt {
@@ -421,40 +410,22 @@ func runBoard(args []string, dryRun bool) {
 		os.Exit(1)
 	}
 
-	if cliEngine == "oci" {
-		fmt.Println("\n------------------- 装载构型 (Zero-Docker Multi-Arch OCI Index) -------------------")
-		fmt.Printf("平台原生支持:  linux/amd64 + linux/arm64 (双架构免编译直通，0 架构警告)\n")
-		fmt.Printf("货舱分层:      %d 个独立集装箱 Layer (双架构共享总载重: %s)\n", len(tarLayers), func() string {
-			var tot int64
-			for _, l := range tarLayers {
-				tot += l.TotalSize
-			}
-			return formatBytes(tot)
-		}())
-		for idx, tl := range tarLayers {
-			fmt.Printf("  [%02d] %s (%s, 路径: /%s)\n", idx+1, tl.Digest[:19]+"...", formatBytes(tl.TotalSize), tl.TargetCargo)
+	fmt.Println("\n------------------- 装载构型 (Zero-Docker Multi-Arch OCI Index) -------------------")
+	fmt.Printf("平台原生支持:  linux/amd64 + linux/arm64 (双架构免编译直通，0 架构警告)\n")
+	fmt.Printf("货舱分层:      %d 个独立集装箱 Layer (双架构共享总载重: %s)\n", len(tarLayers), func() string {
+		var tot int64
+		for _, l := range tarLayers {
+			tot += l.TotalSize
 		}
-		fmt.Printf("AMD64 清单:    %s (%d 字节)\n", mfDigestAMD, mfSizeAMD)
-		fmt.Printf("ARM64 清单:    %s (%d 字节)\n", mfDigestARM, mfSizeARM)
-		fmt.Printf("多架构索引:    %s (%d 字节)\n", indexDigest, indexSize)
-		fmt.Println("----------------------------------------------------------------------------------")
-	} else {
-		// 在 cacheDir 中维护专属 .dockerignore，避免 Docker daemon 扫描传输无关上下文
-		dockerignorePath := filepath.Join(cacheDir, ".dockerignore")
-		_ = os.WriteFile(dockerignorePath, []byte("*\n!*.dat\n!*.tar.gz\n!*.tar\n!*.enc\n"), 0644)
-
-		dockerfilePath := filepath.Join(tmpDir, "Dockerfile")
-		if err := docker.GenerateDockerfile(dockerfilePath, layerFiles); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 生成 Dockerfile 失败: %v\n", err)
-			os.Exit(1)
-		}
-		defer os.Remove(dockerfilePath)
-
-		dfContent, _ := os.ReadFile(dockerfilePath)
-		fmt.Println("\n------------------- 装载构型 (Dockerfile) -------------------")
-		fmt.Println(string(dfContent))
-		fmt.Println("-------------------------------------------------------------")
+		return formatBytes(tot)
+	}())
+	for idx, tl := range tarLayers {
+		fmt.Printf("  [%02d] %s (%s, 路径: /%s)\n", idx+1, tl.Digest[:19]+"...", formatBytes(tl.TotalSize), tl.TargetCargo)
 	}
+	fmt.Printf("AMD64 清单:    %s (%d 字节)\n", mfDigestAMD, mfSizeAMD)
+	fmt.Printf("ARM64 清单:    %s (%d 字节)\n", mfDigestARM, mfSizeARM)
+	fmt.Printf("多架构索引:    %s (%d 字节)\n", indexDigest, indexSize)
+	fmt.Println("----------------------------------------------------------------------------------")
 
 	if dryRun {
 		fmt.Println("[DRY RUN] 模拟登船完毕，跳过实际航行与推送。")
@@ -475,46 +446,16 @@ func runBoard(args []string, dryRun bool) {
 			mfDigestAMD, mfBytesAMD,
 			mfDigestARM, mfBytesARM,
 			indexBytes, retryCount,
-			cliEngine, tmpDir, cacheDir, layerFiles,
-			shouldClean, cleanAll,
 		)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[-] 交付至港口 [%s] 失败: %v\n", target.DisplayName, err)
 			os.Exit(1)
 		}
 
-		if target.IsGHCR {
-			fmt.Printf("\n------------------- 正在维护 [%s] 分类的历史航次配额 (%s) -------------------\n", category, target.DisplayName)
-			if target.Password != "" {
-				ghClient := github.NewClient(target.Repository, target.Password)
-				if cfg.RetentionCount > 0 {
-					_ = ghClient.PruneCategoryVersions(category, cfg.RetentionCount)
-				}
-				fmt.Println("-> 正在顺带扫描并清理远端未打标孤立版本 (Untagged Versions)...")
-				deletedUntagged, errUntagged := ghClient.PruneUntaggedVersions()
-				if errUntagged != nil {
-					fmt.Printf("   [-] 清理远端未打标版本提示: %v\n", errUntagged)
-				} else if deletedUntagged > 0 {
-					fmt.Printf("   ✓ 顺带成功清理了 %d 个远端孤立 untagged 版本！\n", deletedUntagged)
-				} else {
-					fmt.Println("   ✓ 远端未发现任何孤立 untagged 版本，状态清洁。")
-				}
-			} else {
-				fmt.Println("未提供通行凭据，跳过远端航次轮转与 untagged 清理维护。")
-			}
-		} else {
-			parts := strings.Split(target.Repository, "/")
-			regHost := target.Repository
-			if len(parts) > 0 {
-				regHost = parts[0]
-			}
-			fmt.Printf("\n------------------- 通用 OCI 注册表配额管理 (%s) -------------------\n", regHost)
-			fmt.Printf("✓ 航次已成功推送至 %s (%s)\n", target.DisplayName, target.Repository)
-			if precision == "fixed" {
-				fmt.Printf("✓ 当前采用固定 Tag 覆盖模式 (%s)，已自动覆写上一航次，远端仓库始终保持最新单版本。\n", tag)
-			} else {
-				fmt.Println("💡 提示: 针对阿里云 ACR 个人版等无生命周期自动清理的环境，可使用固定 Tag 覆盖模式 (如 ark board --latest 或配置 ARK_TAG=latest) 实现自动覆写，免手动清理。")
-			}
+		// 统一面向 Provider 接口调用配额与生命周期维护
+		provider := target.Provider()
+		if err := provider.MaintainQuota(ctx, category, cfg.RetentionCount, tag, precision == "fixed"); err != nil {
+			fmt.Printf("   [-] 配额维护提示: %v\n", err)
 		}
 	}
 
@@ -546,147 +487,108 @@ func pushSingleTarget(
 	mfDigestARM string, mfBytesARM []byte,
 	indexBytes []byte,
 	retryCount int,
-	cliEngine string,
-	tmpDir, cacheDir string,
-	layerFiles []string,
-	shouldClean, cleanAll bool,
 ) error {
 	fullTag := fmt.Sprintf("%s:%s", target.Repository, tag)
-	parts := strings.Split(target.Repository, "/")
-	regHost := "ghcr.io"
-	if len(parts) >= 1 && parts[0] != "" {
-		regHost = parts[0]
+	provider := target.Provider()
+
+	if provider.Password() == "" {
+		return fmt.Errorf("未检测到通行凭据，请在 .env 中配置对应目标凭据 (如 GH_TOKEN 或 ALIYUN_PASSWORD)")
 	}
 
-	if cliEngine == "oci" {
-		if target.Password == "" {
-			return fmt.Errorf("未检测到通行凭据，请在 .env 中配置对应目标凭据 (如 GH_TOKEN 或 ALIYUN_PASSWORD)")
+	userDisplay := provider.Username()
+	if userDisplay == "" {
+		userDisplay = "(Token 自动协商)"
+	}
+
+	fmt.Printf("\n==> 正在连接港口 %s (用户: %s, 目标: %s)...\n", provider.Host(), userDisplay, provider.DisplayName())
+	ociClient, err := provider.GetOCIClient(ctx)
+	if err != nil {
+		return fmt.Errorf("初始化 OCI 客户端失败: %w", err)
+	}
+
+	fmt.Println("==> 启用 Zero-Docker Pipeline 极速直推: 内存流式单通道直推，本地额外磁盘 0 字节，0 无效 CPU 压缩！")
+
+	for idx, tl := range tarLayers {
+		fmt.Printf("-> 正在探测货舱分层 [%d/%d]: %s (%s)...\n", idx+1, len(tarLayers), tl.FileName, formatBytes(tl.TotalSize))
+		exists, err := ociClient.CheckBlobExists(ctx, tl.Digest)
+		if err == nil && exists {
+			fmt.Printf("   [远端已就绪 ✓] 0 流量秒传 (指纹: %s...)\n", tl.Digest[:19])
+			continue
 		}
 
-		fmt.Printf("\n==> 正在连接港口 %s (用户: %s, 目标: %s)...\n", regHost, target.Username, target.DisplayName)
-		ociClient, err := oci.NewClient(target.Repository, target.Username, target.Password)
-		if err != nil {
-			return fmt.Errorf("初始化 OCI 客户端失败: %w", err)
-		}
-
-		fmt.Println("==> 启用 Zero-Docker Pipeline 极速直推: 内存流式单通道直推，本地额外磁盘 0 字节，0 无效 CPU 压缩！")
-
-		for idx, tl := range tarLayers {
-			fmt.Printf("-> 正在探测货舱分层 [%d/%d]: %s (%s)...\n", idx+1, len(tarLayers), tl.FileName, formatBytes(tl.TotalSize))
-			exists, err := ociClient.CheckBlobExists(ctx, tl.Digest)
-			if err == nil && exists {
-				fmt.Printf("   [远端已就绪 ✓] 0 流量秒传 (指纹: %s...)\n", tl.Digest[:19])
-				continue
+		fmt.Printf("   [正在直推 ⚡] 建立内存流式通道，直传远端注册表...\n")
+		var pushErr error
+		startTime := time.Now()
+		for attempt := 1; attempt <= retryCount; attempt++ {
+			stream, cleanup, sErr := tl.OpenStream()
+			if sErr != nil {
+				pushErr = sErr
+				break
 			}
 
-			fmt.Printf("   [正在直推 ⚡] 建立内存流式通道，直传远端注册表...\n")
-			var pushErr error
-			startTime := time.Now()
-			for attempt := 1; attempt <= retryCount; attempt++ {
-				stream, cleanup, sErr := tl.OpenStream()
-				if sErr != nil {
-					pushErr = sErr
-					break
-				}
-
-				var lastReport time.Time
-				pushErr = ociClient.UploadBlobStream(ctx, tl.Digest, tl.TotalSize, stream, func(written int64) {
-					now := time.Now()
-					if now.Sub(lastReport) >= 300*time.Millisecond || written == tl.TotalSize {
-						lastReport = now
-						elapsed := now.Sub(startTime).Seconds()
-						speedMB := 0.0
-						if elapsed > 0 {
-							speedMB = float64(written) / 1024 / 1024 / elapsed
-						}
-						pct := float64(written) / float64(tl.TotalSize) * 100
-						fmt.Printf("\r   -> 已直传: %s / %s (%.1f%%) - %.1f MB/s   ",
-							formatBytes(written), formatBytes(tl.TotalSize), pct, speedMB)
+			var lastReport time.Time
+			pushErr = ociClient.UploadBlobStream(ctx, tl.Digest, tl.TotalSize, stream, func(written int64) {
+				now := time.Now()
+				if now.Sub(lastReport) >= 300*time.Millisecond || written == tl.TotalSize {
+					lastReport = now
+					elapsed := now.Sub(startTime).Seconds()
+					speedMB := 0.0
+					if elapsed > 0 {
+						speedMB = float64(written) / 1024 / 1024 / elapsed
 					}
-				})
-				cleanup()
-
-				if pushErr == nil {
-					fmt.Printf("\n   ✓ 货舱 [%s] 直推完成 (耗时: %v)！\n", tl.FileName, time.Since(startTime).Round(time.Millisecond))
-					break
+					pct := float64(written) / float64(tl.TotalSize) * 100
+					fmt.Printf("\r   -> 已直传: %s / %s (%.1f%%) - %.1f MB/s   ",
+						formatBytes(written), formatBytes(tl.TotalSize), pct, speedMB)
 				}
+			})
+			cleanup()
 
-				if attempt < retryCount {
-					fmt.Printf("\n   [!] 提示: 直推遇到网络波动 (%v)，正在进行第 %d/%d 次重试...\n", pushErr, attempt+1, retryCount)
-					time.Sleep(2 * time.Second)
-				}
+			if pushErr == nil {
+				fmt.Printf("\n   ✓ 货舱 [%s] 直推完成 (耗时: %v)！\n", tl.FileName, time.Since(startTime).Round(time.Millisecond))
+				break
 			}
 
-			if pushErr != nil {
-				return fmt.Errorf("货舱 [%s] 直推失败: %w", tl.FileName, pushErr)
+			if attempt < retryCount {
+				fmt.Printf("\n   [!] 提示: 直推遇到网络波动 (%v)，正在进行第 %d/%d 次重试...\n", pushErr, attempt+1, retryCount)
+				time.Sleep(2 * time.Second)
 			}
 		}
 
-		fmt.Println("-> 正在提交双架构班轮构型 (AMD64 & ARM64 Config JSON)...")
-		if err := ociClient.UploadBlobBytes(ctx, cfgDigestAMD, cfgBytesAMD); err != nil {
-			return fmt.Errorf("提交 AMD64 Config 失败: %w", err)
-		}
-		if err := ociClient.UploadBlobBytes(ctx, cfgDigestARM, cfgBytesARM); err != nil {
-			return fmt.Errorf("提交 ARM64 Config 失败: %w", err)
-		}
-
-		tagAMD := fmt.Sprintf("%s-amd64", tag)
-		tagARM := fmt.Sprintf("%s-arm64", tag)
-		fmt.Println("-> 正在提交并打标多架构平台清单 (AMD64 & ARM64)...")
-		if err := ociClient.PutManifest(ctx, mfDigestAMD, mfBytesAMD, oci.MediaTypeDockerManifestV2); err != nil {
-			return fmt.Errorf("提交 AMD64 Manifest 失败: %w", err)
-		}
-		if err := ociClient.PutManifest(ctx, tagAMD, mfBytesAMD, oci.MediaTypeDockerManifestV2); err != nil {
-			return fmt.Errorf("打标 AMD64 Manifest (%s) 失败: %w", tagAMD, err)
-		}
-
-		if err := ociClient.PutManifest(ctx, mfDigestARM, mfBytesARM, oci.MediaTypeDockerManifestV2); err != nil {
-			return fmt.Errorf("提交 ARM64 Manifest 失败: %w", err)
-		}
-		if err := ociClient.PutManifest(ctx, tagARM, mfBytesARM, oci.MediaTypeDockerManifestV2); err != nil {
-			return fmt.Errorf("打标 ARM64 Manifest (%s) 失败: %w", tagARM, err)
-		}
-
-		fmt.Printf("-> 正在绑定多架构班轮总览标签 (ManifestList PUT): %s...\n", fullTag)
-		if err := ociClient.PutManifest(ctx, tag, indexBytes, oci.MediaTypeDockerManifestList); err != nil {
-			return fmt.Errorf("提交多架构 ManifestList 失败: %w", err)
-		}
-		fmt.Printf("✓ 航次交付登船成功 (双架构 linux/amd64 + linux/arm64 显式打标: %s, %s, %s)！\n", tag, tagAMD, tagARM)
-		return nil
-	}
-
-	// Docker CLI 备选引擎链路
-	if target.Password != "" {
-		fmt.Printf("正在校验港口通行证 %s (用户: %s)...\n", regHost, target.Username)
-		_ = docker.Login(regHost, target.Username, target.Password)
-	}
-
-	dockerfilePath := filepath.Join(tmpDir, fmt.Sprintf("Dockerfile_%s", target.Key))
-	_ = docker.GenerateDockerfile(dockerfilePath, layerFiles)
-	defer os.Remove(dockerfilePath)
-
-	pushedDirectly := false
-	fmt.Printf("\n==> 正在使用 BuildKit 构建交付至: %s...\n", fullTag)
-	if target.Password != "" {
-		if err := docker.BuildWithDirectPush(dockerfilePath, cacheDir, fullTag); err == nil {
-			fmt.Println("✓ 班轮快照流式直推交付成功！")
-			pushedDirectly = true
+		if pushErr != nil {
+			return fmt.Errorf("货舱 [%s] 直推失败: %w", tl.FileName, pushErr)
 		}
 	}
 
-	if !pushedDirectly {
-		if err := docker.Build(dockerfilePath, cacheDir, fullTag); err != nil {
-			return fmt.Errorf("Docker 构建失败: %w", err)
-		}
-		if err := docker.PushWithRetry(fullTag, retryCount, 3*time.Second); err != nil {
-			return fmt.Errorf("航次推送失败: %w", err)
-		}
-		fmt.Println("✓ 航次交付登船成功！")
+	fmt.Println("-> 正在提交双架构班轮构型 (AMD64 & ARM64 Config JSON)...")
+	if err := ociClient.UploadBlobBytes(ctx, cfgDigestAMD, cfgBytesAMD); err != nil {
+		return fmt.Errorf("提交 AMD64 Config 失败: %w", err)
+	}
+	if err := ociClient.UploadBlobBytes(ctx, cfgDigestARM, cfgBytesARM); err != nil {
+		return fmt.Errorf("提交 ARM64 Config 失败: %w", err)
 	}
 
-	if shouldClean && !cleanAll && !pushedDirectly {
-		_ = docker.RemoveImage(fullTag)
+	tagAMD := fmt.Sprintf("%s-amd64", tag)
+	tagARM := fmt.Sprintf("%s-arm64", tag)
+	fmt.Println("-> 正在提交并打标多架构平台清单 (AMD64 & ARM64)...")
+	if err := ociClient.PutManifest(ctx, mfDigestAMD, mfBytesAMD, oci.MediaTypeDockerManifestV2); err != nil {
+		return fmt.Errorf("提交 AMD64 Manifest 失败: %w", err)
 	}
+	if err := ociClient.PutManifest(ctx, tagAMD, mfBytesAMD, oci.MediaTypeDockerManifestV2); err != nil {
+		return fmt.Errorf("打标 AMD64 Manifest (%s) 失败: %w", tagAMD, err)
+	}
+
+	if err := ociClient.PutManifest(ctx, mfDigestARM, mfBytesARM, oci.MediaTypeDockerManifestV2); err != nil {
+		return fmt.Errorf("提交 ARM64 Manifest 失败: %w", err)
+	}
+	if err := ociClient.PutManifest(ctx, tagARM, mfBytesARM, oci.MediaTypeDockerManifestV2); err != nil {
+		return fmt.Errorf("打标 ARM64 Manifest (%s) 失败: %w", tagARM, err)
+	}
+
+	fmt.Printf("-> 正在绑定多架构班轮总览标签 (ManifestList PUT): %s...\n", fullTag)
+	if err := ociClient.PutManifest(ctx, tag, indexBytes, oci.MediaTypeDockerManifestList); err != nil {
+		return fmt.Errorf("提交多架构 ManifestList 失败: %w", err)
+	}
+	fmt.Printf("✓ 航次交付登船成功 (双架构 linux/amd64 + linux/arm64 显式打标: %s, %s, %s)！\n", tag, tagAMD, tagARM)
 	return nil
 }
 

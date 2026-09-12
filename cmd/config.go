@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"ark/pkg/config"
+	"ark/pkg/registry"
 	"ark/pkg/scanner"
 )
 
@@ -193,7 +194,11 @@ type RegistryTarget struct {
 	Repository  string // 完整仓库地址 (如 registry.cn-hangzhou.aliyuncs.com/xxx/ark)
 	Username    string // 登录用户名
 	Password    string // 密码或访问令牌
-	IsGHCR      bool   // 是否为 GitHub Packages (支持专属 REST API 轮转)
+}
+
+// Provider 获取对应的 Registry Provider 流程实现实例
+func (t RegistryTarget) Provider() registry.Provider {
+	return registry.NewProvider(t.Key, t.Repository, t.Username, t.Password)
 }
 
 // isTargetKeyword 判断参数是否为目标别名关键字
@@ -262,7 +267,6 @@ func resolveRegistryTargets(ws, cliTarget, cliRepo, defaultRepo string) []Regist
 			Repository:  cliRepo,
 			Username:    resolveRegistryUser(cliRepo),
 			Password:    loadToken(ws),
-			IsGHCR:      isGHCR,
 		}}
 	}
 
@@ -305,7 +309,6 @@ func resolveRegistryTargets(ws, cliTarget, cliRepo, defaultRepo string) []Regist
 			Repository:  repo,
 			Username:    user,
 			Password:    pass,
-			IsGHCR:      false,
 		}, true
 	}
 
@@ -334,7 +337,6 @@ func resolveRegistryTargets(ws, cliTarget, cliRepo, defaultRepo string) []Regist
 			Repository:  repo,
 			Username:    user,
 			Password:    pass,
-			IsGHCR:      true,
 		}, true
 	}
 
@@ -384,7 +386,6 @@ func resolveRegistryTargets(ws, cliTarget, cliRepo, defaultRepo string) []Regist
 		Repository:  defaultRepo,
 		Username:    resolveRegistryUser(defaultRepo),
 		Password:    loadToken(ws),
-		IsGHCR:      isGHCR,
 	}}
 }
 
