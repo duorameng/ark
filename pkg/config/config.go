@@ -9,20 +9,30 @@ import (
 
 // Source 定义单个货舱舱位数据源
 type Source struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Path     string `json:"path"`
-	Priority int    `json:"priority,omitempty"` // 优先级/冷热度 (1-99，数值小排前面)
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	FilesOnly bool   `json:"files_only,omitempty"` // 为 true 时仅备份该目录下的同级文件 (不递归子目录)
+	Priority  int    `json:"priority,omitempty"`   // 优先级/冷热度 (1-99，数值小排前面)
+}
+
+// IsRootFiles 判断该舱位是否为根目录同级文件归集舱位 (精确防冲突)
+func (s *Source) IsRootFiles() bool {
+	if s.FilesOnly {
+		return true
+	}
+	// 仅当 ID 完全匹配系统专属保留 ID 时识别，杜绝用户同名普通文件夹冲突
+	return s.ID == DefaultRootFilesID
 }
 
 // Config 航运清运配置
 type Config struct {
-	Repository     string   `json:"repository"`
-	Category       string   `json:"category"`
-	RetentionCount int      `json:"retention_count"`
-	Encrypt        bool     `json:"encrypt"`
-	TagPrecision   string   `json:"tag_precision,omitempty"`    // 时间标签精度: day(天) / second(秒，默认) / minute(分)
-	PushRetry      int      `json:"push_retry,omitempty"`       // docker push 失败重试次数 (默认 3 次)
+	Repository        string   `json:"repository"`
+	Category          string   `json:"category"`
+	RetentionCount    int      `json:"retention_count"`
+	Encrypt           bool     `json:"encrypt"`
+	TagPrecision      string   `json:"tag_precision,omitempty"`        // 时间标签精度: day(天) / second(秒，默认) / minute(分)
+	PushRetry         int      `json:"push_retry,omitempty"`           // docker push 失败重试次数 (默认 3 次)
 	CleanAfterPush    *bool    `json:"clean_after_push,omitempty"`     // build/push 完成后是否自动清理本地镜像与构建缓存 (默认 true)
 	CleanAllAfterPush *bool    `json:"clean_all_after_push,omitempty"` // build/push 完成后是否彻底清空 cache/tmp 并重置初始状态 (默认 false)
 	Sources           []Source `json:"sources"`
@@ -48,12 +58,12 @@ func (c *Config) ShouldCleanAllAfterPush() bool {
 func DefaultConfig() *Config {
 	defaultClean := true
 	return &Config{
-		Repository:     "ghcr.io/duorameng/ark",
-		Category:       "vps",
-		RetentionCount: 5,
+		Repository:     DefaultRepository,
+		Category:       DefaultCategory,
+		RetentionCount: DefaultRetentionCount,
 		Encrypt:        true,
-		TagPrecision:   "second",
-		PushRetry:      3,
+		TagPrecision:   DefaultTagPrecision,
+		PushRetry:      DefaultPushRetry,
 		CleanAfterPush: &defaultClean,
 		Sources:        make([]Source, 0),
 	}
@@ -72,10 +82,10 @@ func Load(path string) (*Config, error) {
 	}
 
 	if cfg.Category == "" {
-		cfg.Category = "vps"
+		cfg.Category = DefaultCategory
 	}
 	if cfg.RetentionCount <= 0 {
-		cfg.RetentionCount = 5
+		cfg.RetentionCount = DefaultRetentionCount
 	}
 
 	return cfg, nil

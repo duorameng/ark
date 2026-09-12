@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"ark/pkg/config"
 )
 
 // ManifestEntry 货舱各集装箱指纹与元数据
@@ -32,15 +34,15 @@ func DeriveSealKey(rawPass string) string {
 // findPersistedKey 查找本地持久化的非明文密钥文件 (多路径智能探测)
 func findPersistedKey(ws string) (string, string) {
 	candidates := []string{
-		filepath.Join(ws, "keys", "seal.key"),
+		filepath.Join(ws, "keys", config.SealKeyFileName),
 	}
 
 	if cwd, err := os.Getwd(); err == nil && cwd != ws {
-		candidates = append(candidates, filepath.Join(cwd, "keys", "seal.key"))
+		candidates = append(candidates, filepath.Join(cwd, "keys", config.SealKeyFileName))
 	}
 
 	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".ark", "seal.key"))
+		candidates = append(candidates, filepath.Join(home, ".ark", config.SealKeyFileName))
 	}
 
 	for _, p := range candidates {
@@ -63,7 +65,7 @@ func findPersistedKey(ws string) (string, string) {
 // getSealPassphraseFromEnv 从环境变量或 .env 中按优先级获取用户配置的原始封条口令
 func getSealPassphraseFromEnv(ws string) string {
 	loadEnvFile(ws)
-	for _, k := range []string{"ARK_SEAL_KEY", "ARK_KEY", "SEAL_KEY"} {
+	for _, k := range []string{config.EnvArkSealKey, "ARK_KEY", "SEAL_KEY"} {
 		if val := strings.TrimSpace(os.Getenv(k)); val != "" {
 			return val
 		}
@@ -79,7 +81,7 @@ func syncPersistedKey(ws string, derivedSecret string) {
 	}
 
 	keysDir := filepath.Join(ws, "keys")
-	keyPath := filepath.Join(keysDir, "seal.key")
+	keyPath := filepath.Join(keysDir, config.SealKeyFileName)
 	_ = os.MkdirAll(keysDir, 0700)
 
 	existing, _ := os.ReadFile(keyPath)
@@ -90,7 +92,7 @@ func syncPersistedKey(ws string, derivedSecret string) {
 	if home, err := os.UserHomeDir(); err == nil {
 		userArkDir := filepath.Join(home, ".ark")
 		_ = os.MkdirAll(userArkDir, 0700)
-		homeKeyPath := filepath.Join(userArkDir, "seal.key")
+		homeKeyPath := filepath.Join(userArkDir, config.SealKeyFileName)
 		existingHome, _ := os.ReadFile(homeKeyPath)
 		if strings.TrimSpace(string(existingHome)) != derivedSecret {
 			_ = os.WriteFile(homeKeyPath, []byte(derivedSecret+"\n"), 0600)

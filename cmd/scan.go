@@ -11,7 +11,7 @@ import (
 
 func runScan(args []string) {
 	ws := getWorkspaceRoot()
-	configPath := filepath.Join(ws, "config.json")
+	configPath := filepath.Join(ws, config.ConfigFileName)
 	scanRoot := "/root/workspace"
 	if len(args) > 0 {
 		scanRoot = args[0]

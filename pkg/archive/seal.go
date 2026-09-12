@@ -262,9 +262,9 @@ func (sw *cbcStreamWriter) Close() error {
 	return err
 }
 
-// PackAndSealStream 将指定源目录边打包 (Tar) -> 边压缩 (Gzip) -> 边加密 (AES-256) 写入 destDatPath
-// 全程内存流式流水线直达，磁盘零中间临时文件，空间占用直降 80%~90%！
-func PackAndSealStream(srcDir, destDatPath string, passphrase []byte) error {
+// PackAndSealSourceStream 将指定源边打包 (Tar) -> 边压缩 (Gzip) -> 边加密 (AES-256) 写入 destDatPath
+// 全程内存流式流水线直达，磁盘零中间临时文件，支持 filesOnly 同级文件打包
+func PackAndSealSourceStream(srcDir, destDatPath string, passphrase []byte, filesOnly bool) error {
 	salt := make([]byte, saltLen)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return err
@@ -296,7 +296,13 @@ func PackAndSealStream(srcDir, destDatPath string, passphrase []byte) error {
 	gw := gzip.NewWriter(encWriter)
 	tw := tar.NewWriter(gw)
 
-	walkErr := WalkAndWriteTar(srcDir, tw)
+	var walkErr error
+	if filesOnly {
+		walkErr = WalkAndWriteFilesOnlyTar(srcDir, tw)
+	} else {
+		walkErr = WalkAndWriteTar(srcDir, tw)
+	}
+
 	if err := tw.Close(); err != nil && walkErr == nil {
 		walkErr = err
 	}
@@ -310,8 +316,13 @@ func PackAndSealStream(srcDir, destDatPath string, passphrase []byte) error {
 	return walkErr
 }
 
-// PackTarGz 将指定源目录边打包边 gzip 压缩写入 destTarGzPath
-func PackTarGz(srcDir, destTarGzPath string) error {
+// PackAndSealStream 将指定源目录边打包 (Tar) -> 边压缩 (Gzip) -> 边加密 (AES-256) 写入 destDatPath
+func PackAndSealStream(srcDir, destDatPath string, passphrase []byte) error {
+	return PackAndSealSourceStream(srcDir, destDatPath, passphrase, false)
+}
+
+// PackSourceTarGz 将指定源边打包边 gzip 压缩写入 destTarGzPath
+func PackSourceTarGz(srcDir, destTarGzPath string, filesOnly bool) error {
 	out, err := os.Create(destTarGzPath)
 	if err != nil {
 		return err
@@ -321,7 +332,13 @@ func PackTarGz(srcDir, destTarGzPath string) error {
 	gw := gzip.NewWriter(out)
 	tw := tar.NewWriter(gw)
 
-	walkErr := WalkAndWriteTar(srcDir, tw)
+	var walkErr error
+	if filesOnly {
+		walkErr = WalkAndWriteFilesOnlyTar(srcDir, tw)
+	} else {
+		walkErr = WalkAndWriteTar(srcDir, tw)
+	}
+
 	if err := tw.Close(); err != nil && walkErr == nil {
 		walkErr = err
 	}
@@ -329,6 +346,11 @@ func PackTarGz(srcDir, destTarGzPath string) error {
 		walkErr = err
 	}
 	return walkErr
+}
+
+// PackTarGz 将指定源目录边打包边 gzip 压缩写入 destTarGzPath
+func PackTarGz(srcDir, destTarGzPath string) error {
+	return PackSourceTarGz(srcDir, destTarGzPath, false)
 }
 
 // UnsealAndUnpackStream 从加密文件流式读取并解密 (AES-256) -> 解压 (Gzip) -> 展开 (Tar)

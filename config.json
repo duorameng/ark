@@ -3,18 +3,28 @@
   "category": "cate1",
   "retention_count": 5,
   "encrypt": true,
-  "clean_after_push": true,
+  "tag_precision": "second",
   "push_retry": 3,
+  "clean_after_push": true,
   "sources": [
+    {
+      "id": "71c038f0-c62e-457b-9768-95b72e004fd4",
+      "name": "Root Files (根级配置与同级文件)",
+      "path": ".",
+      "files_only": true,
+      "priority": 10
+    },
     {
       "id": "mock_static",
       "name": "Static Archives",
-      "path": "test_data/static_archive"
+      "path": "test_data/static_archive",
+      "priority": 20
     },
     {
       "id": "mock_active",
       "name": "Active Workspace",
-      "path": "test_data/active_workspace"
+      "path": "test_data/active_workspace",
+      "priority": 30
     }
   ]
 }

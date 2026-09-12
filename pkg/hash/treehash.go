@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 
 	"ark/pkg/archive"
@@ -33,43 +34,90 @@ type fileResult struct {
 	err   error
 }
 
-// ComputeDirTreeHash 并发计算目录的确定性哈希树 (Tree Hash)
+// ComputeDirTreeHash 兼容旧接口，计算普通目录的 Tree Hash
 func ComputeDirTreeHash(dirPath string) (*DirInfo, error) {
+	return ComputeSourceTreeHash(dirPath, false)
+}
+
+// ComputeSourceTreeHash 并发计算目录或同级文件的确定性哈希树 (Tree Hash)
+func ComputeSourceTreeHash(dirPath string, filesOnly bool) (*DirInfo, error) {
 	info, err := os.Stat(dirPath)
 	if err != nil {
 		return nil, err
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("%s 不是一个有效目录", dirPath)
+		// 单文件直接计算哈希
+		f, err := os.Open(dirPath)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err != nil {
+			return nil, err
+		}
+		return &DirInfo{
+			Hash:       hex.EncodeToString(h.Sum(nil)),
+			FileCount:  1,
+			TotalBytes: info.Size(),
+		}, nil
 	}
 
 	tasks := make([]fileTask, 0, 1024)
-	err = filepath.Walk(dirPath, func(path string, f os.FileInfo, err error) error {
-		if err != nil {
-			return nil // 跳过无法读取的特殊文件
-		}
-		if f.IsDir() {
-			if archive.ShouldIgnoreDir(f.Name()) && path != dirPath {
-				return filepath.SkipDir
-			}
-			return nil
-		}
 
-		rel, err := filepath.Rel(dirPath, path)
+	if filesOnly {
+		// 仅归集该目录下的直接同级文件 (不递归子目录)
+		entries, err := os.ReadDir(dirPath)
 		if err != nil {
-			return nil
+			return nil, err
 		}
-		// 统一路径分隔符为 /
-		rel = filepath.ToSlash(rel)
-		tasks = append(tasks, fileTask{
-			fullPath: path,
-			relPath:  rel,
-			size:     f.Size(),
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if name == "ark" || name == "ark.exe" || name == "tmp" || name == "cache" || strings.HasPrefix(name, ".git") {
+				continue
+			}
+			fi, err := e.Info()
+			if err != nil {
+				continue
+			}
+			tasks = append(tasks, fileTask{
+				fullPath: filepath.Join(dirPath, name),
+				relPath:  name,
+				size:     fi.Size(),
+			})
+		}
+	} else {
+		// 完整递归遍历子目录
+		err = filepath.Walk(dirPath, func(path string, f os.FileInfo, err error) error {
+			if err != nil {
+				return nil // 跳过无法读取的特殊文件
+			}
+			if f.IsDir() {
+				if archive.ShouldIgnoreDir(f.Name()) && path != dirPath {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			rel, err := filepath.Rel(dirPath, path)
+			if err != nil {
+				return nil
+			}
+			// 统一路径分隔符为 /
+			rel = filepath.ToSlash(rel)
+			tasks = append(tasks, fileTask{
+				fullPath: path,
+				relPath:  rel,
+				size:     f.Size(),
+			})
+			return nil
 		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if len(tasks) == 0 {

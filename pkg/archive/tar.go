@@ -29,8 +29,79 @@ func ShouldIgnoreDir(name string) bool {
 	return false
 }
 
+// WalkAndWriteFilesOnlyTar 仅将 srcDir 下的直接同级文件写入 tar 包 (不递归任何子目录)
+func WalkAndWriteFilesOnlyTar(srcDir string, tw *tar.Writer) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == "ark" || name == "ark.exe" || name == "tmp" || name == "cache" || strings.HasPrefix(name, ".git") {
+			continue
+		}
+
+		filePath := filepath.Join(srcDir, name)
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = name
+		fillOSMetadata(info, hdr)
+
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+
+		f, err := os.Open(filePath)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(tw, f); err != nil {
+			f.Close()
+			return err
+		}
+		f.Close()
+	}
+	return nil
+}
+
 // WalkAndWriteTar 遍历 srcDir 并将所有文件与目录写入 tar.Writer，严格保留文件权限与数字 UID/GID
 func WalkAndWriteTar(srcDir string, tw *tar.Writer) error {
+	stat, err := os.Stat(srcDir)
+	if err != nil {
+		return err
+	}
+
+	// 若目标为单个普通文件，直接封装单文件
+	if !stat.IsDir() {
+		hdr, err := tar.FileInfoHeader(stat, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = stat.Name()
+		fillOSMetadata(stat, hdr)
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		f, err := os.Open(srcDir)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(tw, f)
+		return err
+	}
+
 	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil

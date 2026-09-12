@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ark/pkg/archive"
+	"ark/pkg/config"
 	"ark/pkg/docker"
 	"ark/pkg/github"
 	"ark/pkg/oci"
@@ -142,8 +143,10 @@ func runLand(args []string) {
 
 	fmt.Println("\n------------------- 正在开封集装箱并归位货物 -------------------")
 	folderNameMap := make(map[string]string)
+	sourceMap := make(map[string]config.Source)
 	for _, src := range cfg.Sources {
 		folderNameMap[src.ID] = filepath.Base(src.Path)
+		sourceMap[src.ID] = src
 	}
 
 	entries, _ := os.ReadDir(tmpLandDir)
@@ -160,30 +163,54 @@ func runLand(args []string) {
 			folderName = realName
 		}
 
+		// 精准判定：以 Source 配置中的 IsRootFiles() 为准，无配置时仅匹配系统专属 ID，杜绝同名常规文件夹冲突
+		isRootFiles := false
+		if src, exists := sourceMap[modName]; exists {
+			isRootFiles = src.IsRootFiles()
+		} else {
+			isRootFiles = (modName == config.DefaultRootFilesID)
+		}
+
 		targetSubDir := filepath.Join(destDir, folderName)
-		_ = os.MkdirAll(targetSubDir, 0755)
+		if isRootFiles {
+			targetSubDir = destDir
+		} else {
+			_ = os.MkdirAll(targetSubDir, 0755)
+		}
 
 		fullFile := filepath.Join(tmpLandDir, fname)
 
-		if strings.HasSuffix(fname, ".dat") || strings.HasSuffix(fname, ".tar.enc") || strings.HasSuffix(fname, ".enc") {
+		if archive.IsEncryptedArchive(fname) {
 			if len(sealPass) == 0 {
 				fmt.Fprintf(os.Stderr, "[-] 货舱 [%s] 包含 AES-256 安全密闭封条，但当前未配置解密口令！\n", fname)
 				fmt.Fprintln(os.Stderr, "    提示: 请在命令行传入 --key \"<您的口令>\"，或在 .env 中配置 ARK_SEAL_KEY")
 				os.Exit(1)
 			}
-			fmt.Printf("-> 正在开封并流式还原 (%s -> %s, 零中间解密文件落盘)...\n", fname, targetSubDir)
+			if isRootFiles {
+				fmt.Printf("-> 正在开封并原位展开根级同级文件 (%s -> %s)...\n", fname, destDir)
+			} else {
+				fmt.Printf("-> 正在开封并流式还原 (%s -> %s, 零中间解密文件落盘)...\n", fname, targetSubDir)
+			}
 			if err := archive.UnsealAndUnpackStream(fullFile, targetSubDir, sealPass); err != nil {
 				fmt.Fprintf(os.Stderr, "[-] 解封还原失败: %v\n", err)
 				os.Exit(1)
 			}
 		} else {
-			fmt.Printf("-> 正在解包还原舱位货物: %s 到 %s...\n", folderName, targetSubDir)
+			if isRootFiles {
+				fmt.Printf("-> 正在解包并原位展开根级同级文件至 %s...\n", destDir)
+			} else {
+				fmt.Printf("-> 正在解包还原舱位货物: %s 到 %s...\n", folderName, targetSubDir)
+			}
 			if err := archive.UnpackTar(fullFile, targetSubDir); err != nil {
 				fmt.Fprintf(os.Stderr, "[-] 还原解包失败: %v\n", err)
 				os.Exit(1)
 			}
 		}
-		fmt.Printf("   ✓ 舱位 [%s] 货物已完整归位！\n", folderName)
+		if isRootFiles {
+			fmt.Println("   ✓ 根级同级配置文件与脚本已成功原位展开归位！")
+		} else {
+			fmt.Printf("   ✓ 舱位 [%s] 货物已完整归位！\n", folderName)
+		}
 	}
 
 	fmt.Println("\n================================================================")

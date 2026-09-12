@@ -53,7 +53,7 @@ func runCheck(args []string) {
 		printPass("工作区", fmt.Sprintf("根路径已就绪: %s", ws))
 	}
 
-	tmpDir := filepath.Join(ws, "tmp")
+	tmpDir := filepath.Join(ws, config.TmpDirName)
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {
 		printFail("临时目录", fmt.Sprintf("创建或访问 tmp 目录失败: %v", err))
 	} else {
@@ -68,7 +68,7 @@ func runCheck(args []string) {
 
 	// 2. 检查主配置文件 config.json
 	fmt.Println("\n2. 主配置文件校验 (config.json):")
-	configPath := filepath.Join(ws, "config.json")
+	configPath := filepath.Join(ws, config.ConfigFileName)
 	var cfg *config.Config
 	if _, err := os.Stat(configPath); err != nil {
 		printFail("配置文件", fmt.Sprintf("未找到主配置文件: %s (提示: 若仅执行货物下船还原 land，无需此文件，可直接运行 ark land)", configPath))

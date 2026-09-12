@@ -253,7 +253,7 @@ func runBoard(args []string, dryRun bool) {
 		}
 
 		fmt.Printf("-> 正在清点舱位: [%s] %s (%s)\n", src.ID, src.Name, srcPath)
-		dirInfo, err := hash.ComputeDirTreeHash(srcPath)
+		dirInfo, err := hash.ComputeSourceTreeHash(srcPath, src.IsRootFiles())
 		if err != nil {
 			fmt.Printf("[-] 扫描目录哈希失败: %v\n", err)
 			continue
@@ -278,13 +278,13 @@ func runBoard(args []string, dryRun bool) {
 			fmt.Println("   [重新装箱 ⚡] 舱位货物有变动或首次装载，开始流式加封...")
 			if cfg.Encrypt {
 				fmt.Println("   正在施加安全密封 (内存流式 Tar -> Gzip -> AES-256 密闭处理，零中间磁盘文件)...")
-				if err := archive.PackAndSealStream(srcPath, layerFile, sealPass); err != nil {
+				if err := archive.PackAndSealSourceStream(srcPath, layerFile, sealPass, src.IsRootFiles()); err != nil {
 					fmt.Fprintf(os.Stderr, "[-] 安全流式打包加密失败: %v\n", err)
 					os.Exit(1)
 				}
 			} else {
 				fmt.Println("   正在流式打包压缩 (Tar -> Gzip)...")
-				if err := archive.PackTarGz(srcPath, layerFile); err != nil {
+				if err := archive.PackSourceTarGz(srcPath, layerFile, src.IsRootFiles()); err != nil {
 					fmt.Fprintf(os.Stderr, "[-] 打包压缩失败: %v\n", err)
 					os.Exit(1)
 				}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ark/pkg/archive"
+	"ark/pkg/config"
 )
 
 func runUnpack(args []string) {
@@ -60,7 +61,7 @@ func runUnpack(args []string) {
 		fmt.Printf("[目标] 单集装箱: %s\n", targetPath)
 		fmt.Printf("[交付] 恢复目录: %s\n", destDir)
 
-		if strings.HasSuffix(fname, ".dat") || strings.HasSuffix(fname, ".enc") {
+		if archive.IsEncryptedArchive(fname) {
 			if len(sealPass) == 0 {
 				fmt.Fprintln(os.Stderr, "[-] 未提供有效安全密钥，无法开启密闭集装箱！")
 				os.Exit(1)
@@ -87,9 +88,11 @@ func runUnpack(args []string) {
 		fmt.Printf("[交付] 批量恢复目录: %s\n", destDir)
 
 		folderNameMap := make(map[string]string)
+		sourceMap := make(map[string]config.Source)
 		if cfg, _, err := LoadAppConfig(ws, ""); err == nil && cfg != nil {
 			for _, src := range cfg.Sources {
 				folderNameMap[src.ID] = filepath.Base(src.Path)
+				sourceMap[src.ID] = src
 			}
 		}
 
@@ -99,7 +102,7 @@ func runUnpack(args []string) {
 				continue
 			}
 			fname := e.Name()
-			if !strings.HasSuffix(fname, ".dat") && !strings.HasSuffix(fname, ".tar") && !strings.HasSuffix(fname, ".tar.gz") && !strings.HasSuffix(fname, ".tgz") && !strings.HasSuffix(fname, ".enc") {
+			if !archive.IsSupportedArchive(fname) {
 				continue
 			}
 
@@ -109,27 +112,51 @@ func runUnpack(args []string) {
 			if realName, ok := folderNameMap[modName]; ok && realName != "" && realName != "." && realName != "/" {
 				folderName = realName
 			}
+
+			// 精准判定：以 Source 中的 IsRootFiles() 为准，无配置时仅匹配系统专属 ID，杜绝同名常规文件夹冲突
+			isRootFiles := false
+			if src, exists := sourceMap[modName]; exists {
+				isRootFiles = src.IsRootFiles()
+			} else {
+				isRootFiles = (modName == config.DefaultRootFilesID)
+			}
+
 			targetSubDir := filepath.Join(destDir, folderName)
+			if isRootFiles {
+				targetSubDir = destDir
+			}
 			fullFile := filepath.Join(targetPath, fname)
 
-			if strings.HasSuffix(fname, ".dat") || strings.HasSuffix(fname, ".enc") {
+			if archive.IsEncryptedArchive(fname) {
 				if len(sealPass) == 0 {
 					fmt.Printf("[!] 跳过密闭集装箱 %s (缺少安全密钥)\n", fname)
 					continue
 				}
-				fmt.Printf("-> 正在开启安全封条并流式还原 (%s -> %s, 零中间解密文件落盘)...\n", fname, targetSubDir)
+				if isRootFiles {
+					fmt.Printf("-> 正在开启安全封条并原位展开根级同级文件 (%s -> %s)...\n", fname, destDir)
+				} else {
+					fmt.Printf("-> 正在开启安全封条并流式还原 (%s -> %s, 零中间解密文件落盘)...\n", fname, targetSubDir)
+				}
 				if err := archive.UnsealAndUnpackStream(fullFile, targetSubDir, sealPass); err != nil {
 					fmt.Printf("[-] 解封 %s 失败: %v\n", fname, err)
 					continue
 				}
 			} else {
-				fmt.Printf("-> 正在还原舱位货物 [%s] 到 %s...\n", folderName, targetSubDir)
+				if isRootFiles {
+					fmt.Printf("-> 正在解包并原位展开根级同级文件至 %s...\n", destDir)
+				} else {
+					fmt.Printf("-> 正在还原舱位货物 [%s] 到 %s...\n", folderName, targetSubDir)
+				}
 				if err := archive.UnpackTar(fullFile, targetSubDir); err != nil {
 					fmt.Printf("[-] 还原 %s 失败: %v\n", folderName, err)
 					continue
 				}
 			}
-			fmt.Printf("   ✓ 舱位 [%s] 货物已完整归位！\n", folderName)
+			if isRootFiles {
+				fmt.Println("   ✓ 根级同级配置文件与脚本已成功原位展开归位！")
+			} else {
+				fmt.Printf("   ✓ 舱位 [%s] 货物已完整归位！\n", folderName)
+			}
 		}
 	}
 

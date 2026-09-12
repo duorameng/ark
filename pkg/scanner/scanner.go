@@ -27,13 +27,21 @@ func ScanRoot(scanRoot string) ([]ScanResult, error) {
 	}
 
 	results := make([]ScanResult, 0)
+	usedIDs := make(map[string]bool)
+	rootFileCount := 0
+	var rootFileSize int64
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		name := entry.Name()
+		if IsIgnoredRootEntry(name) {
 			continue
 		}
-		name := entry.Name()
-		if name == "ark" || strings.HasPrefix(name, ".") || name == "tmp" || name == "cache" {
+
+		if !entry.IsDir() {
+			if info, err := entry.Info(); err == nil {
+				rootFileCount++
+				rootFileSize += info.Size()
+			}
 			continue
 		}
 
@@ -46,13 +54,25 @@ func ScanRoot(scanRoot string) ([]ScanResult, error) {
 			return '_'
 		}, name)
 
+		// 防冲突机制：如果用户子目录的名字与系统专属保留舱位 ID 碰撞，自动调整 ID
+		if id == config.DefaultRootFilesID {
+			id = "dir_" + id
+		}
+		originalID := id
+		seq := 1
+		for usedIDs[id] {
+			id = fmt.Sprintf("%s_%d", originalID, seq)
+			seq++
+		}
+		usedIDs[id] = true
+
 		score, count, size := evaluateDirectory(fullPath)
 
-		vol := "中频变动"
-		if score <= 20 {
-			vol = "极少变动 (冷数据)"
-		} else if score >= 60 {
-			vol = "频繁变动 (热数据)"
+		vol := MediumDataLabel
+		if score <= ScoreColdThreshold {
+			vol = ColdDataLabel
+		} else if score >= ScoreHotThreshold {
+			vol = HotDataLabel
 		}
 
 		results = append(results, ScanResult{
@@ -68,6 +88,21 @@ func ScanRoot(scanRoot string) ([]ScanResult, error) {
 		})
 	}
 
+	if rootFileCount > 0 {
+		results = append(results, ScanResult{
+			Source: config.Source{
+				ID:        config.DefaultRootFilesID,
+				Name:      config.RootFilesCargoName,
+				Path:      scanRoot,
+				FilesOnly: true,
+				Priority:  PriorityRootFiles, // 配置文件变动少，置于底层最优先复用
+			},
+			FileCount:  rootFileCount,
+			TotalSize:  rootFileSize,
+			Volatility: RootFilesDataLabel,
+		})
+	}
+
 	// 关键：按照 Priority 升序排序 (冷数据在上，热数据在下)
 	sort.SliceStable(results, func(i, j int) bool {
 		return results[i].Source.Priority < results[j].Source.Priority
@@ -77,7 +112,7 @@ func ScanRoot(scanRoot string) ([]ScanResult, error) {
 }
 
 func evaluateDirectory(dirPath string) (score int, count int, size int64) {
-	score = 30
+	score = PriorityBase
 	hasDB := false
 	hasRecent := false
 	now := time.Now()
@@ -87,8 +122,7 @@ func evaluateDirectory(dirPath string) (score int, count int, size int64) {
 			return nil
 		}
 		if info.IsDir() {
-			base := strings.ToLower(info.Name())
-			if base == "data" || base == "db" || base == "database" {
+			if IsDatabaseDir(info.Name()) {
 				hasDB = true
 			}
 			return nil
@@ -97,8 +131,7 @@ func evaluateDirectory(dirPath string) (score int, count int, size int64) {
 		count++
 		size += info.Size()
 
-		ext := strings.ToLower(filepath.Ext(info.Name()))
-		if ext == ".db" || ext == ".sqlite" || ext == ".sqlite3" || ext == ".sql" {
+		if IsDatabaseExt(info.Name()) {
 			hasDB = true
 		}
 
@@ -110,20 +143,20 @@ func evaluateDirectory(dirPath string) (score int, count int, size int64) {
 	})
 
 	if hasDB {
-		score += 40
+		score += PriorityDBBonus
 	}
 	if hasRecent {
-		score += 20
+		score += PriorityRecentBonus
 	}
 	if count <= 5 && size <= 100*1024 {
-		score -= 20
+		score -= PriorityColdDiscount
 	}
 
-	if score < 10 {
-		score = 10
+	if score < PriorityMin {
+		score = PriorityMin
 	}
-	if score > 90 {
-		score = 90
+	if score > PriorityMax {
+		score = PriorityMax
 	}
 
 	return score, count, size
@@ -131,10 +164,10 @@ func evaluateDirectory(dirPath string) (score int, count int, size int64) {
 
 // PrintScanSummary 美化打印扫描结果表格
 func PrintScanSummary(results []ScanResult) {
-	fmt.Printf("%-15s %-12s %-20s %-8s %s\n", "舱位 ID", "优先级", "变动特征", "文件数", "路径")
-	fmt.Println(strings.Repeat("-", 78))
+	fmt.Printf("%-20s %-12s %-20s %-8s %s\n", "舱位 ID", "优先级", "变动特征", "文件数", "路径")
+	fmt.Println(strings.Repeat("-", 85))
 	for _, r := range results {
-		fmt.Printf("%-15s %-12s %-20s %-8d %s\n",
+		fmt.Printf("%-20s %-12s %-20s %-8d %s\n",
 			fmt.Sprintf("[%s]", r.Source.ID),
 			fmt.Sprintf("优先级: %d", r.Source.Priority),
 			r.Volatility,
@@ -142,6 +175,6 @@ func PrintScanSummary(results []ScanResult) {
 			r.Source.Path,
 		)
 	}
-	fmt.Println(strings.Repeat("-", 78))
+	fmt.Println(strings.Repeat("-", 85))
 	fmt.Println("【排序策略说明】：数值小的静态舱位放前面，数值大的高频变动舱位放后面，以最大化 Docker 缓存命中！")
 }

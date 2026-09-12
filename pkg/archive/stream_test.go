@@ -101,3 +101,44 @@ func TestStreamBackwardCompatibilityWithRawTar(t *testing.T) {
 		t.Fatalf("content mismatch: got %s, want %s", restored1, content1)
 	}
 }
+
+func TestFilesOnlyPackAndUnpack(t *testing.T) {
+	tempDir := t.TempDir()
+	srcDir := filepath.Join(tempDir, "src")
+	_ = os.MkdirAll(filepath.Join(srcDir, "sub_service"), 0755)
+
+	confContent := []byte("version: '3.8'\nservices:\n  app:\n    image: myapp\n")
+	envContent := []byte("DB_HOST=localhost\nDB_PORT=5432\n")
+	_ = os.WriteFile(filepath.Join(srcDir, "docker-compose.yml"), confContent, 0644)
+	_ = os.WriteFile(filepath.Join(srcDir, ".env"), envContent, 0644)
+	_ = os.WriteFile(filepath.Join(srcDir, "sub_service", "sub_file.txt"), []byte("should be ignored"), 0644)
+
+	passphrase := []byte("FilesOnlySecret2026")
+	datPath := filepath.Join(tempDir, "root_files.dat")
+
+	// 1. FilesOnly 打包加密
+	if err := PackAndSealSourceStream(srcDir, datPath, passphrase, true); err != nil {
+		t.Fatalf("PackAndSealSourceStream failed: %v", err)
+	}
+
+	// 2. 原位解包还原到 restoreDir
+	restoreDir := filepath.Join(tempDir, "restore")
+	if err := UnsealAndUnpackStream(datPath, restoreDir, passphrase); err != nil {
+		t.Fatalf("UnsealAndUnpackStream failed: %v", err)
+	}
+
+	// 3. 验证同级文件存在
+	gotConf, err := os.ReadFile(filepath.Join(restoreDir, "docker-compose.yml"))
+	if err != nil || !bytes.Equal(gotConf, confContent) {
+		t.Fatalf("docker-compose.yml mismatch or missing: %v", err)
+	}
+	gotEnv, err := os.ReadFile(filepath.Join(restoreDir, ".env"))
+	if err != nil || !bytes.Equal(gotEnv, envContent) {
+		t.Fatalf(".env mismatch or missing: %v", err)
+	}
+
+	// 4. 验证子目录没有被重复打包到 root_files
+	if _, err := os.Stat(filepath.Join(restoreDir, "sub_service")); err == nil {
+		t.Errorf("expected sub_service to NOT exist in files_only bundle")
+	}
+}

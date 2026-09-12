@@ -14,10 +14,10 @@ func getWorkspaceRoot() string {
 	exePath, err := os.Executable()
 	if err == nil {
 		dir := filepath.Dir(exePath)
-		if filepath.Base(dir) == "scripts" || filepath.Base(dir) == "tmp" {
+		if filepath.Base(dir) == "scripts" || filepath.Base(dir) == config.TmpDirName {
 			return filepath.Dir(dir)
 		}
-		if _, err := os.Stat(filepath.Join(dir, "config.json")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, config.ConfigFileName)); err == nil {
 			return dir
 		}
 	}
@@ -27,7 +27,7 @@ func getWorkspaceRoot() string {
 
 // loadEnvFile 从工作区加载 .env 文件，并将其中未定义的配置注入至进程环境变量
 func loadEnvFile(workspaceRoot string) {
-	envPath := filepath.Join(workspaceRoot, ".env")
+	envPath := filepath.Join(workspaceRoot, config.EnvFileName)
 	data, err := os.ReadFile(envPath)
 	if err != nil {
 		return
@@ -53,10 +53,10 @@ func loadEnvFile(workspaceRoot string) {
 func loadToken(workspaceRoot string) string {
 	loadEnvFile(workspaceRoot)
 
-	if token := os.Getenv("GH_TOKEN"); token != "" {
+	if token := os.Getenv(config.EnvGhToken); token != "" {
 		return strings.TrimSpace(token)
 	}
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+	if token := os.Getenv(config.EnvGithubToken); token != "" {
 		return strings.TrimSpace(token)
 	}
 
@@ -76,16 +76,16 @@ func resolveRepository(cfgRepo, cliRepo string) string {
 	if strings.TrimSpace(cliRepo) != "" {
 		return strings.TrimSpace(cliRepo)
 	}
-	if envRepo := os.Getenv("ARK_REPOSITORY"); strings.TrimSpace(envRepo) != "" {
+	if envRepo := os.Getenv(config.EnvArkRepository); strings.TrimSpace(envRepo) != "" {
 		return strings.TrimSpace(envRepo)
 	}
-	if envImage := os.Getenv("ARK_IMAGE"); strings.TrimSpace(envImage) != "" {
+	if envImage := os.Getenv(config.EnvArkImage); strings.TrimSpace(envImage) != "" {
 		return strings.TrimSpace(envImage)
 	}
 	if strings.TrimSpace(cfgRepo) != "" {
 		return strings.TrimSpace(cfgRepo)
 	}
-	return "ghcr.io/duorameng/ark"
+	return config.DefaultRepository
 }
 
 // extractRepoFlag 从命令行参数中提取 --repo, --repository, --image, -i 参数
@@ -166,10 +166,10 @@ func extractEngineFlag(args []string) ([]string, string) {
 	}
 
 	if engine == "" {
-		engine = strings.ToLower(strings.TrimSpace(os.Getenv("ARK_ENGINE")))
+		engine = strings.ToLower(strings.TrimSpace(os.Getenv(config.EnvArkEngine)))
 	}
 	if engine == "" {
-		engine = "oci"
+		engine = config.DefaultEngine
 	}
 
 	return cleaned, engine
@@ -184,26 +184,26 @@ func extractEngineFlag(args []string) ([]string, string) {
 func LoadAppConfig(ws, cliRepo string) (*config.Config, bool, error) {
 	loadEnvFile(ws)
 
-	configPath := filepath.Join(ws, "config.json")
+	configPath := filepath.Join(ws, config.ConfigFileName)
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		category := os.Getenv("ARK_CATEGORY")
+		category := os.Getenv(config.EnvArkCategory)
 		if category == "" {
-			category = "vps"
+			category = config.DefaultCategory
 		}
 		defaultClean := true
 		defaultCleanAll := false
-		if val := strings.ToLower(os.Getenv("ARK_CLEAN_ALL_AFTER_PUSH")); val == "true" || val == "1" {
+		if val := strings.ToLower(os.Getenv(config.EnvArkCleanAllAfterPush)); val == "true" || val == "1" {
 			defaultCleanAll = true
 		}
 
 		cfg = &config.Config{
 			Repository:        resolveRepository("", cliRepo),
 			Category:          category,
-			RetentionCount:    5,
+			RetentionCount:    config.DefaultRetentionCount,
 			Encrypt:           true,
-			TagPrecision:      "second",
-			PushRetry:         3,
+			TagPrecision:      config.DefaultTagPrecision,
+			PushRetry:         config.DefaultPushRetry,
 			CleanAfterPush:    &defaultClean,
 			CleanAllAfterPush: &defaultCleanAll,
 			Sources:           make([]config.Source, 0),

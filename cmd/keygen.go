@@ -7,12 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"ark/pkg/config"
 )
 
 func runKeygen(args []string) {
 	ws := getWorkspaceRoot()
 	keysDir := filepath.Join(ws, "keys")
-	keyPath := filepath.Join(keysDir, "seal.key")
+	keyPath := filepath.Join(keysDir, config.SealKeyFileName)
 	_ = os.MkdirAll(keysDir, 0700)
 
 	var derivedSecret string
@@ -46,7 +48,7 @@ func runKeygen(args []string) {
 	if home, err := os.UserHomeDir(); err == nil {
 		userArkDir := filepath.Join(home, ".ark")
 		_ = os.MkdirAll(userArkDir, 0700)
-		_ = os.WriteFile(filepath.Join(userArkDir, "seal.key"), []byte(derivedSecret+"\n"), 0600)
+		_ = os.WriteFile(filepath.Join(userArkDir, config.SealKeyFileName), []byte(derivedSecret+"\n"), 0600)
 	}
 
 	fmt.Println("================================================================")
