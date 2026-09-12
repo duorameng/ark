@@ -201,3 +201,50 @@ func resolveSealKey(ws string, allowGenerate bool, cliKey string) ([]byte, error
 	fmt.Printf("[安全] 首次装载，已自动生成非明文安全封条密钥: %s\n", keyPath)
 	return []byte(derivedKey), nil
 }
+
+// extractRepoFlag 从命令行参数中提取 --repo, --repository, --image, -i 参数
+func extractRepoFlag(args []string) ([]string, string) {
+	var cleaned []string
+	repo := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--repo" || arg == "--repository" || arg == "--image" || arg == "-i" {
+			if i+1 < len(args) {
+				repo = args[i+1]
+				i++
+				continue
+			}
+		} else if strings.HasPrefix(arg, "--repo=") {
+			repo = strings.TrimPrefix(arg, "--repo=")
+			continue
+		} else if strings.HasPrefix(arg, "--repository=") {
+			repo = strings.TrimPrefix(arg, "--repository=")
+			continue
+		} else if strings.HasPrefix(arg, "--image=") {
+			repo = strings.TrimPrefix(arg, "--image=")
+			continue
+		} else if strings.HasPrefix(arg, "-i=") {
+			repo = strings.TrimPrefix(arg, "-i=")
+			continue
+		}
+		cleaned = append(cleaned, arg)
+	}
+	return cleaned, repo
+}
+
+// resolveRepository 综合解析镜像仓库名称: 命令行参数 > 环境变量 > 配置文件
+func resolveRepository(cfgRepo, cliRepo string) string {
+	if strings.TrimSpace(cliRepo) != "" {
+		return strings.TrimSpace(cliRepo)
+	}
+	if envRepo := os.Getenv("ARK_REPOSITORY"); strings.TrimSpace(envRepo) != "" {
+		return strings.TrimSpace(envRepo)
+	}
+	if envImage := os.Getenv("ARK_IMAGE"); strings.TrimSpace(envImage) != "" {
+		return strings.TrimSpace(envImage)
+	}
+	if strings.TrimSpace(cfgRepo) != "" {
+		return strings.TrimSpace(cfgRepo)
+	}
+	return "ghcr.io/duorameng/ark"
+}

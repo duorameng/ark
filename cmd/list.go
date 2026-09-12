@@ -10,6 +10,9 @@ import (
 )
 
 func runList(args []string) {
+	cleanedArgs, cliRepo := extractRepoFlag(args)
+	args = cleanedArgs
+
 	ws := getWorkspaceRoot()
 	configPath := filepath.Join(ws, "config.json")
 	cfg, err := config.Load(configPath)
@@ -17,6 +20,8 @@ func runList(args []string) {
 		fmt.Fprintf(os.Stderr, "[-] 加载配置失败: %v\n", err)
 		os.Exit(1)
 	}
+
+	cfg.Repository = resolveRepository(cfg.Repository, cliRepo)
 
 	categoryFilter := ""
 	if len(args) > 0 {

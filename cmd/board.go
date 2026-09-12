@@ -95,6 +95,11 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 	}
 
 	if explicitTag != "" {
+		if strings.Contains(explicitTag, ":") {
+			parts := strings.SplitN(explicitTag, ":", 2)
+			cfg.Repository = parts[0]
+			explicitTag = parts[1]
+		}
 		tag = explicitTag
 		if strings.Contains(tag, "-") {
 			category = strings.SplitN(tag, "-", 2)[0]
@@ -105,6 +110,11 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 	// 智能位置参数分析
 	if len(positional) == 1 {
 		p0 := positional[0]
+		if strings.Contains(p0, ":") {
+			parts := strings.SplitN(p0, ":", 2)
+			cfg.Repository = parts[0]
+			p0 = parts[1]
+		}
 		switch strings.ToLower(p0) {
 		case "day", "d", "date", "天", "日":
 			precision = "day"
@@ -147,6 +157,7 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 
 func runBoard(args []string, dryRun bool) {
 	cleanedArgs, cliKey := extractKeyFlag(args)
+	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
@@ -156,6 +167,8 @@ func runBoard(args []string, dryRun bool) {
 		fmt.Fprintf(os.Stderr, "[-] 加载配置失败: %v\n", err)
 		os.Exit(1)
 	}
+
+	cfg.Repository = resolveRepository(cfg.Repository, cliRepo)
 
 	tag, category, precision, retryCount, shouldClean := parseBoardFlags(cfg, args)
 

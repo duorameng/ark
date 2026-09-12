@@ -15,6 +15,7 @@ import (
 
 func runLand(args []string) {
 	cleanedArgs, cliKey := extractKeyFlag(args)
+	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
@@ -25,12 +26,20 @@ func runLand(args []string) {
 		os.Exit(1)
 	}
 
+	cfg.Repository = resolveRepository(cfg.Repository, cliRepo)
+
 	category := cfg.Category
 	var tag string
 	destDir := ""
 
 	if len(args) > 0 {
 		param := args[0]
+		// 支持直接输入完整镜像名+标签 (例如 ghcr.io/org/repo:category-20260912-120000)
+		if strings.Contains(param, ":") {
+			parts := strings.SplitN(param, ":", 2)
+			cfg.Repository = parts[0]
+			param = parts[1]
+		}
 		if strings.Contains(param, "-") && len(strings.Split(param, "-")) >= 3 {
 			tag = param
 			category = strings.SplitN(param, "-", 2)[0]

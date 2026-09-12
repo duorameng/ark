@@ -17,6 +17,7 @@ import (
 
 func runCheck(args []string) {
 	cleanedArgs, cliKey := extractKeyFlag(args)
+	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
 	_ = cleanedArgs
 
 	ws := getWorkspaceRoot()
@@ -87,6 +88,7 @@ func runCheck(args []string) {
 				printFail("解析配置", fmt.Sprintf("加载配置失败: %v", loadErr))
 			} else {
 				cfg = loadedCfg
+				cfg.Repository = resolveRepository(cfg.Repository, cliRepo)
 				// 校验 repository
 				if strings.TrimSpace(cfg.Repository) == "" {
 					printFail("镜像港位", "未配置目标镜像仓库 (repository 为空)")
