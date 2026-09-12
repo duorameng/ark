@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"ark/pkg/config"
@@ -328,10 +329,17 @@ func LoadAppConfig(ws, cliRepo string) (*config.Config, bool, error) {
 			defaultCleanAll = true
 		}
 
+		retentionCount := config.DefaultRetentionCount
+		if val := strings.TrimSpace(os.Getenv(config.EnvArkRetentionCount)); val != "" {
+			if count, err := strconv.Atoi(val); err == nil && count > 0 {
+				retentionCount = count
+			}
+		}
+
 		cfg = &config.Config{
 			Repository:        resolveRepository("", cliRepo),
 			Category:          category,
-			RetentionCount:    config.DefaultRetentionCount,
+			RetentionCount:    retentionCount,
 			Encrypt:           true,
 			TagPrecision:      config.DefaultTagPrecision,
 			PushRetry:         config.DefaultPushRetry,
@@ -346,6 +354,13 @@ func LoadAppConfig(ws, cliRepo string) (*config.Config, bool, error) {
 		}
 
 		return cfg, false, err
+	}
+
+	// 若 config.json 存在，但环境变量指定了保留个数，则允许环境变量覆盖
+	if val := strings.TrimSpace(os.Getenv(config.EnvArkRetentionCount)); val != "" {
+		if count, err := strconv.Atoi(val); err == nil && count > 0 {
+			cfg.RetentionCount = count
+		}
 	}
 
 	// 若 config.json 存在但 sources 列表为空，尝试通过 .env 中的 ARK_BACKUP_DIR 自动补全

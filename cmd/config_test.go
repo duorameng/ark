@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"ark/pkg/config"
 )
 
 func TestLoadAppConfigWithoutFile(t *testing.T) {
@@ -146,3 +148,37 @@ func TestBackupDirFromEnv(t *testing.T) {
 		t.Errorf("expected resolved backup dir %s, got %s", mockBackupDir, resolved)
 	}
 }
+
+func TestRetentionCountFromEnv(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "ark_retention_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// 写入 .env 文件包含 ARK_RETENTION_COUNT=9
+	envContent := "ARK_RETENTION_COUNT=9\n"
+	_ = os.WriteFile(filepath.Join(tempDir, ".env"), []byte(envContent), 0644)
+
+	cfg, _, _ := LoadAppConfig(tempDir, "")
+	if cfg.RetentionCount != 9 {
+		t.Errorf("expected retention_count 9 from .env, got: %d", cfg.RetentionCount)
+	}
+}
+
+func TestParseBoardFlagsKeep(t *testing.T) {
+	cfg := &config.Config{
+		RetentionCount: 5,
+	}
+	_, _, _, _, _, _ = parseBoardFlags(cfg, []string{"day", "--keep", "7"})
+	if cfg.RetentionCount != 7 {
+		t.Errorf("expected RetentionCount=7 after --keep 7, got %d", cfg.RetentionCount)
+	}
+
+	_, _, _, _, _, _ = parseBoardFlags(cfg, []string{"day", "--retention=12"})
+	if cfg.RetentionCount != 12 {
+		t.Errorf("expected RetentionCount=12 after --retention=12, got %d", cfg.RetentionCount)
+	}
+}
+
+

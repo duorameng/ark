@@ -102,6 +102,21 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "-r=")); err == nil && v > 0 {
 				retryCount = v
 			}
+		case arg == "--keep" || arg == "--retention":
+			if i+1 < len(args) {
+				if v, err := strconv.Atoi(args[i+1]); err == nil && v > 0 {
+					cfg.RetentionCount = v
+				}
+				i++
+			}
+		case strings.HasPrefix(arg, "--keep="):
+			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "--keep=")); err == nil && v > 0 {
+				cfg.RetentionCount = v
+			}
+		case strings.HasPrefix(arg, "--retention="):
+			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "--retention=")); err == nil && v > 0 {
+				cfg.RetentionCount = v
+			}
 		default:
 			positional = append(positional, arg)
 		}
@@ -581,16 +596,27 @@ func runBoard(args []string, dryRun bool) {
 	}
 
 	fmt.Printf("\n------------------- 正在维护 [%s] 分类的历史航次配额 -------------------\n", category)
-	if token != "" && cfg.RetentionCount > 0 {
+	if token != "" {
 		ghClient := github.NewClient(cfg.Repository, token)
-		_ = ghClient.PruneCategoryVersions(category, cfg.RetentionCount)
+		if cfg.RetentionCount > 0 {
+			_ = ghClient.PruneCategoryVersions(category, cfg.RetentionCount)
+		}
+		fmt.Println("-> 正在顺带扫描并清理远端未打标孤立版本 (Untagged Versions)...")
+		deletedUntagged, errUntagged := ghClient.PruneUntaggedVersions()
+		if errUntagged != nil {
+			fmt.Printf("   [-] 清理远端未打标版本提示: %v\n", errUntagged)
+		} else if deletedUntagged > 0 {
+			fmt.Printf("   ✓ 顺带成功清理了 %d 个远端孤立 untagged 版本！\n", deletedUntagged)
+		} else {
+			fmt.Println("   ✓ 远端未发现任何孤立 untagged 版本，状态清洁。")
+		}
 	} else {
-		fmt.Println("未提供通行凭据，跳过远端航次轮转维护。")
+		fmt.Println("未提供通行凭据，跳过远端航次轮转与 untagged 清理维护。")
 	}
 
 	if cleanAll {
 		fmt.Println("\n------------------- 正在执行全量环境重置 (--clean-all) -------------------")
-		runClean([]string{"--docker"})
+		runClean([]string{"--all"})
 	} else if shouldClean {
 		cleanOrphanCacheFiles(cacheDir, sources)
 	}

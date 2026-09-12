@@ -6,6 +6,8 @@ keys/
 # Local cache and temporary data
 cache/
 tmp/
+logs/
+*.log
 *.age
 *.tar
 *.gz

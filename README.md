@@ -83,6 +83,7 @@ ark/
 | **试运行演练 (Dry Run)** | `./ark dry` | 检查冷热排序、UUID 根同级文件层、Tree Hash |
 | **即时扫描指定目录** | `./ark scan /path/to/project` | 扫描并生成 `config.json` |
 | **按天定时备份** | `./ark board day` 或 `./ark board --day` | 标签为 `vps-YYYYMMDD`，适合每日定时任务 |
+| **自定义备份保留个数** | `./ark board --keep 7` 或 `.env` 设 `ARK_RETENTION_COUNT=7` | 自动轮转保留指定个数，顺带清理远端 untagged |
 | **多业务分类隔离备份** | `./ark board db day` | 独立分类 `db`，与 `vps` 互不干扰 |
 | **小磁盘极致干净模式** | `./ark board --clean-all` | 推送后彻底清空 `cache/` 与临时文件 |
 | **恢复最新备份到指定目录** | `./ark land -o /path/to/restore` | 自动检索云端最新版本并原位解包 |
@@ -370,13 +371,34 @@ source <(./ark completion zsh)
 
 ---
 
-## ⏰ 定时自动化任务 (Crontab 配置范例)
+## ⏰ 定时自动化任务与生产级脚本 (Cron / Task Scheduler)
 
-使用 `crontab -e` 配置每日凌晨 3:00 自动打包登船，自动按天归档并轮转历史配额：
+仓库内置了针对生产级 Linux VPS 与 Windows 环境深度优化的开箱即用自动化脚本：
+- **Linux / VPS**: [`scripts/backup.sh`](file:///f:/workspace/ark/scripts/backup.sh)
+- **Windows**: [`scripts/backup.ps1`](file:///f:/workspace/ark/scripts/backup.ps1)
 
+### 脚本核心亮点
+1. **严格保留备份个数配额**：通过 `.env` 中的 `ARK_RETENTION_COUNT=5` 或命令行参数 `--keep 5` 自定义保留数量，超出上限时自动归档淘汰旧航次；
+2. **顺带彻底清除远端 Untagged**：每次备份成功后，自动顺带扫描并清理远端镜像仓库中由于轮转或旧推送残留的孤立未打标版本（`untagged`），杜绝远端镜像散落堆积；
+3. **进程并发文件锁保护 (flock)**：网络偶发波动或耗时增加时，杜绝定时任务重复并发启动干烧；
+4. **结构化时间戳日志与自动截断**：所有操作记录在 `logs/backup.log`，超过 5000 行自动滚动截断，保护 VPS 磁盘容量；
+5. **小磁盘极致干净模式**：自动附带 `--clean-all`，推送后本地 0 缓存占用。
+
+### Linux Crontab 定时配置示例 (每日凌晨 03:00 执行)
 ```bash
-# 每天凌晨 3:00 执行备份，输出详细日志，自动清理本地缓存
-0 3 * * * cd /root/ark && ./ark board day --clean-all >> /var/log/ark_voyage.log 2>&1
+# 编辑定时任务
+crontab -e
+
+# 添加如下任务 (每天凌晨 03:00 自动执行脚本，带日志记录与防重叠锁):
+0 3 * * * /root/ark/scripts/backup.sh >> /dev/null 2>&1
+```
+
+### Windows 任务计划程序注册示例 (每日凌晨 03:00 执行)
+在 PowerShell 7 中运行以下命令直接注册任务：
+```powershell
+$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File C:\ark\scripts\backup.ps1"
+$Trigger = New-ScheduledTaskTrigger -Daily -At 3am
+Register-ScheduledTask -TaskName "ArkDailyBackup" -Action $Action -Trigger $Trigger -Description "Ark 每日自动备份与远端维护" -User "SYSTEM"
 ```
 
 ---
@@ -387,8 +409,8 @@ Ark 支持在编译时通过 Go ldflags 动态注入版本号、Git Commit 与�
 
 ```bash
 # Linux / macOS 原生极速构建
-go build -ldflags "-s -w -X main.Version=v1.4.2 -X main.GitCommit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date +%Y-%m-%d)" -o ark .
+go build -ldflags "-s -w -X main.Version=v1.4.4 -X main.GitCommit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date +%Y-%m-%d)" -o ark .
 
 # Windows PowerShell 一键构建
-& 'C:\Program Files\PowerShell\7\pwsh.exe' -Command "mise exec -- go build -ldflags '-s -w -X main.Version=v1.4.2' -o ark.exe ."
+& 'C:\Program Files\PowerShell\7\pwsh.exe' -Command "mise exec -- go build -ldflags '-s -w -X main.Version=v1.4.4' -o ark.exe ."
 ```
