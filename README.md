@@ -67,48 +67,76 @@ ark/
 ## 命令行操作指南
 
 ### 1. 全自动扫描与清单生成
+### 1. 全自动扫描与清单生成 (Auto Scan & Rank)
 ```bash
 # 全自动探测总目录下所有子工程，按冷热度排序并写入 config.json
-./ark 扫描 /root/workspace
+ark scan /root/workspace
 ```
 
-### 2. 登船 (打包、封条与推送)
+### 2. 登船推送 (Ship Cargo)
 ```bash
 # 模拟试航 (DRY RUN): 验证哈希对比、打包加密与 Dockerfile 生成，不实际上传
-./ark 试航
+ark dry
 
 # 使用默认分类 (vps) 登船 -> 生成 vps-YYYYMMDD-HHMMSS 与 vps-latest
-./ark 登船
+ark board
 
 # 临时指定分类登船 (例如 db) -> 生成 db-YYYYMMDD-HHMMSS 与 db-latest
-./ark 登船 db
+ark board db
 ```
 
-### 3. 查验 (按分类检索港口航次)
+### 3. 查验港口航次 (List Voyages)
 ```bash
 # 查验港口所有航次
-./ark 查验
+ark list
 
 # 仅检索指定分类 (例如 vps) 的历史航次
-./ark 查验 vps
+ark list vps
 ```
 
-### 4. 下船 (靠岸卸载与还原)
+### 4. 下船还原货物 (Restore Cargo)
 ```bash
 # 卸载指定分类的最新班次 (从 vps-latest 还原):
-./ark 下船 vps
+ark land vps
 
 # 卸载指定日期的历史班次到指定目录:
-./ark 下船 vps-20260912-140000 /root/workspace/restored_vps
+ark land vps-20260912-140000 /root/workspace/restored_vps
 ```
 
-### 5. 独立解封 (无 Docker 极速还原)
+### 5. 独立解封 (Zero-Docker Restore)
 ```bash
 # 直接解封单个集装箱 (例如恢复 postgres 数据，UID/GID 严格还原为 70:0)
-./ark 解封 cache/postgres.dat /root/workspace/pg_restored
+ark unpack cache/postgres.dat /root/workspace/pg_restored
 
 # 批量解封 cache 目录下所有货物
-./ark 解封 cache /root/workspace/all_restored
+ark unpack cache /root/workspace/all_restored
+```
+
+### 6. 自我升级 (Self-Update with CDN Failover)
+```bash
+# 自动检测 GitHub 最新 Release 并通过国内镜像源自动容灾重试下载更新自身:
+ark update
+
+# 查看当前程序版本:
+ark version
+
+# 从自定义 URL 直接下载最新二进制替换自身:
+ark update https://github.com/duorameng/ark/releases/download/v1.0.0/ark-linux-amd64
+```
+
+### 7. Shell 自动补全 (Auto-Completion)
+```bash
+# 一键自动安装补全到当前 Shell 配置文件 (~/.bashrc 或 ~/.zshrc):
+ark completion install
+
+# 或在当前会话临时启用 (Bash):
+source <(ark completion bash)
+
+# 或在当前会话临时启用 (Zsh):
+source <(ark completion zsh)
+
+# 或在当前会话临时启用 (PowerShell):
+ark completion powershell | Out-String | Invoke-Expression
 ```
 
 ---
@@ -117,6 +145,7 @@ ark/
 
 使用 `crontab -e` 配置每日凌晨 3:00 自动登船出海：
 ```bash
-0 3 * * * cd /root/workspace/ark && ./ark 登船 >> /var/log/ark_voyage.log 2>&1
+0 3 * * * cd /root/workspace/ark && ./ark board >> /var/log/ark_voyage.log 2>&1
 ```
+
 
