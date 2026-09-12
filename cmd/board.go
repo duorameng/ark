@@ -17,7 +17,7 @@ import (
 	"ark/pkg/timezone"
 )
 
-func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precision string, retryCount int, shouldClean bool) {
+func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precision string, retryCount int, shouldClean bool, cleanAll bool) {
 	category = cfg.Category
 	precision = cfg.TagPrecision
 	if precision == "" {
@@ -28,6 +28,7 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 		retryCount = 3
 	}
 	shouldClean = cfg.ShouldCleanAfterPush()
+	cleanAll = cfg.ShouldCleanAllAfterPush()
 
 	if envRetry := os.Getenv("ARK_PUSH_RETRY"); envRetry != "" {
 		if val, err := strconv.Atoi(envRetry); err == nil && val > 0 {
@@ -36,6 +37,12 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 	}
 	if envClean := os.Getenv("ARK_CLEAN_AFTER_PUSH"); envClean != "" {
 		shouldClean = envClean == "1" || strings.ToLower(envClean) == "true"
+	}
+	if envCleanAll := os.Getenv("ARK_CLEAN_ALL_AFTER_PUSH"); envCleanAll != "" {
+		cleanAll = envCleanAll == "1" || strings.ToLower(envCleanAll) == "true"
+		if cleanAll {
+			shouldClean = true
+		}
 	}
 
 	var positional []string
@@ -52,10 +59,14 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			precision = "minute"
 		case arg == "--hour":
 			precision = "hour"
+		case arg == "--clean-all" || arg == "--purge" || arg == "--clean-cache" || arg == "--reset":
+			cleanAll = true
+			shouldClean = true
 		case arg == "--clean":
 			shouldClean = true
 		case arg == "--no-clean" || arg == "--keep-cache":
 			shouldClean = false
+			cleanAll = false
 		case arg == "--tag":
 			if i+1 < len(args) {
 				explicitTag = args[i+1]
@@ -104,7 +115,7 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 		if strings.Contains(tag, "-") {
 			category = strings.SplitN(tag, "-", 2)[0]
 		}
-		return tag, category, "custom", retryCount, shouldClean
+		return tag, category, "custom", retryCount, shouldClean, cleanAll
 	}
 
 	// 智能位置参数分析
@@ -128,7 +139,7 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			if strings.Contains(p0, "-") {
 				tag = p0
 				category = strings.SplitN(p0, "-", 2)[0]
-				return tag, category, "custom", retryCount, shouldClean
+				return tag, category, "custom", retryCount, shouldClean, cleanAll
 			}
 			category = p0
 		}
@@ -146,13 +157,13 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			precision = "hour"
 		default:
 			tag = fmt.Sprintf("%s-%s", category, p1)
-			return tag, category, "custom", retryCount, shouldClean
+			return tag, category, "custom", retryCount, shouldClean, cleanAll
 		}
 	}
 
 	timeSuffix := timezone.GenerateTagTimeByPrecision(precision)
 	tag = fmt.Sprintf("%s-%s", category, timeSuffix)
-	return tag, category, precision, retryCount, shouldClean
+	return tag, category, precision, retryCount, shouldClean, cleanAll
 }
 
 func runBoard(args []string, dryRun bool) {
@@ -171,7 +182,7 @@ func runBoard(args []string, dryRun bool) {
 
 	cfg.Repository = resolveRepository(cfg.Repository, cliRepo)
 
-	tag, category, precision, retryCount, shouldClean := parseBoardFlags(cfg, args)
+	tag, category, precision, retryCount, shouldClean, cleanAll := parseBoardFlags(cfg, args)
 
 	fmt.Println("================================================================")
 	fmt.Println("          🚢 Ark 班轮装载登船系统 (Golang Engine)               ")
@@ -182,7 +193,13 @@ func runBoard(args []string, dryRun bool) {
 	fmt.Printf("[航次] 舱位配额: 该分类下保留最新 %d 个航次\n", cfg.RetentionCount)
 	fmt.Printf("[容灾] 推送重试配额: 失败自动重试 %d 次 (指数退避)\n", retryCount)
 	fmt.Printf("[安全] 货运封条: %v\n", cfg.Encrypt)
-	fmt.Printf("[存储] 产物清理: 构建推送后自动释放本地镜像与 BuildKit 缓存 (%v)\n", shouldClean)
+	cleanModeStr := "释放本地镜像与构建缓存 (保留增量缓存)"
+	if cleanAll {
+		cleanModeStr = "全量自动重置 (推送后彻底清空 cache/ 与临时文件，0 本地残留)"
+	} else if !shouldClean {
+		cleanModeStr = "保留本地镜像与构建缓存"
+	}
+	fmt.Printf("[存储] 产物清理: %s\n", cleanModeStr)
 
 	cacheDir := filepath.Join(ws, "cache")
 	tmpDir := filepath.Join(ws, "tmp")
@@ -366,7 +383,10 @@ func runBoard(args []string, dryRun bool) {
 		fmt.Println("未提供通行凭据，跳过远端航次轮转维护。")
 	}
 
-	if shouldClean {
+	if cleanAll {
+		fmt.Println("\n------------------- 正在执行全量环境重置 (--clean-all) -------------------")
+		runClean([]string{"--docker"})
+	} else if shouldClean {
 		fmt.Println("\n------------------- 正在清理本地构建缓存与临时数据 -------------------")
 		if !pushedDirectly {
 			fmt.Printf("-> 正在移除本地快照镜像: %s...\n", fullTag)

@@ -120,8 +120,11 @@ ark board --retry 5    # 或简写: -r 5
 # 组合使用: 指定分类为 db、按天生成标签、失败重试 5 次
 ark board db day --retry 5
 
-# 亦可在 config.json 中永久配置默认精度与重试次数:
-# "tag_precision": "day", "push_retry": 5
+# 全量极致干净模式 (推送完成后自动彻底清空本地 cache 与临时文件，恢复 0 字节初始状态):
+ark board nd3 day --clean-all   # 或使用别名: --purge / --reset
+
+# 亦可在 config.json 中永久配置默认精度与清理策略:
+# "tag_precision": "day", "push_retry": 5, "clean_all_after_push": true
 ```
 
 ### 5. 查验港口航次 (List Voyages)

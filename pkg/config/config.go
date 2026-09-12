@@ -23,8 +23,9 @@ type Config struct {
 	Encrypt        bool     `json:"encrypt"`
 	TagPrecision   string   `json:"tag_precision,omitempty"`    // 时间标签精度: day(天) / second(秒，默认) / minute(分)
 	PushRetry      int      `json:"push_retry,omitempty"`       // docker push 失败重试次数 (默认 3 次)
-	CleanAfterPush *bool    `json:"clean_after_push,omitempty"` // build/push 完成后是否自动清理本地镜像与构建缓存 (默认 true)
-	Sources        []Source `json:"sources"`
+	CleanAfterPush    *bool    `json:"clean_after_push,omitempty"`     // build/push 完成后是否自动清理本地镜像与构建缓存 (默认 true)
+	CleanAllAfterPush *bool    `json:"clean_all_after_push,omitempty"` // build/push 完成后是否彻底清空 cache/tmp 并重置初始状态 (默认 false)
+	Sources           []Source `json:"sources"`
 }
 
 // ShouldCleanAfterPush 判断构建推送后是否需要清理本地镜像与缓存
@@ -33,6 +34,14 @@ func (c *Config) ShouldCleanAfterPush() bool {
 		return *c.CleanAfterPush
 	}
 	return true
+}
+
+// ShouldCleanAllAfterPush 判断构建推送后是否需要彻底清空本地缓存集装箱与临时数据
+func (c *Config) ShouldCleanAllAfterPush() bool {
+	if c.CleanAllAfterPush != nil {
+		return *c.CleanAllAfterPush
+	}
+	return false
 }
 
 // DefaultConfig 返回预设默认配置
