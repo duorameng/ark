@@ -2,6 +2,8 @@ package archive
 
 import (
 	"archive/tar"
+	"bufio"
+	"compress/gzip"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,17 +29,8 @@ func ShouldIgnoreDir(name string) bool {
 	return false
 }
 
-// PackTar 将 srcDir 打包为 tar 文件并写入 destTarPath，严格保留文件权限与 UID/GID
-func PackTar(srcDir, destTarPath string) error {
-	out, err := os.Create(destTarPath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	tw := tar.NewWriter(out)
-	defer tw.Close()
-
+// WalkAndWriteTar 遍历 srcDir 并将所有文件与目录写入 tar.Writer，严格保留文件权限与数字 UID/GID
+func WalkAndWriteTar(srcDir string, tw *tar.Writer) error {
 	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -99,6 +92,20 @@ func PackTar(srcDir, destTarPath string) error {
 	})
 }
 
+// PackTar 将 srcDir 打包为未压缩的 tar 文件 (保留兼容)
+func PackTar(srcDir, destTarPath string) error {
+	out, err := os.Create(destTarPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	tw := tar.NewWriter(out)
+	defer tw.Close()
+
+	return WalkAndWriteTar(srcDir, tw)
+}
+
 type dirMetadata struct {
 	path    string
 	mode    os.FileMode
@@ -107,15 +114,9 @@ type dirMetadata struct {
 	modTime time.Time
 }
 
-// UnpackTar 将 tar 文件解压到 destDir，严格恢复原始文件权限、数字 UID/GID 与修改时间
-func UnpackTar(tarPath, destDir string) error {
-	f, err := os.Open(tarPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	tr := tar.NewReader(f)
+// UnpackTarStream 从任意 io.Reader 流中解压 Tar 格式数据至 destDir，严格恢复原始文件权限、数字 UID/GID 与修改时间
+func UnpackTarStream(r io.Reader, destDir string) error {
+	tr := tar.NewReader(r)
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return err
 	}
@@ -194,4 +195,26 @@ func UnpackTar(tarPath, destDir string) error {
 	}
 
 	return nil
+}
+
+// UnpackTar 将 tar 或 tar.gz 文件解压到 destDir，自动识别是否含有 gzip 压缩 (严格恢复原始文件权限与数字所有者)
+func UnpackTar(tarPath, destDir string) error {
+	f, err := os.Open(tarPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	br := bufio.NewReader(f)
+	magic, _ := br.Peek(2)
+	if len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		gr, err := gzip.NewReader(br)
+		if err != nil {
+			return err
+		}
+		defer gr.Close()
+		return UnpackTarStream(gr, destDir)
+	}
+
+	return UnpackTarStream(br, destDir)
 }

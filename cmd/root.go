@@ -58,6 +58,8 @@ func Execute(version, commit, buildDate string) {
 		runUpdate(args)
 	case "completion", "补全":
 		runCompletion(args)
+	case "clean", "reset", "purge", "清理", "重置":
+		runClean(args)
 	case "version", "-v", "--version", "版本":
 		extra := ""
 		if AppCommit != "none" || AppBuildDate != "unknown" {
@@ -85,6 +87,7 @@ func PrintHelp() {
 	fmt.Println("  board       打包各舱位目录，施加 AES-256 安全密闭封条并推送到云端班轮 (BuildKit COPY --link)")
 	fmt.Println("  land        从港口调取班轮镜像快照，解封解密并完整归位货物")
 	fmt.Println("  unpack      无需 Docker 引擎，单二进制直接从本地快照包 (.dat/.tar) 独立解封还原货物")
+	fmt.Println("  clean       清空本地缓存、临时目录与落地货物，释放 Docker 垃圾缓存，恢复初始干净状态")
 	fmt.Println("  scan        全自动扫描父目录，按冷热变动率智能排序生成 sources 清单")
 	fmt.Println("  list        查询远端港口已停泊的所有航次班次与创建日期")
 	fmt.Println("  keygen      配置或生成专属安全封条加密密码 (支持自定义密码或自动生成)")
@@ -97,6 +100,8 @@ func PrintHelp() {
 	fmt.Println("示例 (Examples):")
 	fmt.Println("  ark check                     # 测试所有配置、各货舱路径与加密封条是否全部健全")
 	fmt.Println("  ark check --key \"<口令>\"       # 指定自定义口令进行闭环加密解密往返自测")
+	fmt.Println("  ark clean                     # 清空 cache/tmp/落地货物与 Docker 缓存，恢复初始干净状态")
+	fmt.Println("  ark clean --docker            # 连同本地历史关联 Docker 镜像一并清理")
 	fmt.Println("  ark scan /root/workspace      # 自动探测子工程，分析冷热变动率并智能排序")
 	fmt.Println("  ark board                     # 默认登船 (按秒级时间戳: {分类}-YYYYMMDD-HHMMSS)")
 	fmt.Println("  ark board day                 # 快捷按天精确度登船 (生成: {分类}-YYYYMMDD)")

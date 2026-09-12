@@ -19,6 +19,7 @@ var AllCommands = []CommandInfo{
 	{Name: "board", Desc: "打包各舱位目录并推送到云端班轮 (BuildKit COPY --link)"},
 	{Name: "land", Desc: "从港口调取镜像快照并解密还原归位货物"},
 	{Name: "unpack", Desc: "无需 Docker 引擎，单二进制独立解密还原货物"},
+	{Name: "clean", Desc: "清理本地缓存、临时目录与落地货物，释放 Docker 垃圾缓存，恢复初始状态"},
 	{Name: "scan", Desc: "自动扫描父目录，按冷热变动率智能排序"},
 	{Name: "list", Desc: "查询远端港口停泊的所有航次记录与日期"},
 	{Name: "keygen", Desc: "配置或生成专属安全封条加密密码"},

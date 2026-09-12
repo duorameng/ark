@@ -151,7 +151,16 @@ ark unpack cache/postgres.dat /root/workspace/pg_restored
 ark unpack cache /root/workspace/all_restored
 ```
 
-### 8. 自我升级 (Self-Update with CDN Failover)
+### 8. 本地工作区重置与环境清理 (Clean & Reset)
+```bash
+# 一键清空 cache/ 缓存、tmp/ 临时文件、历史落地货物目录，深度释放 Docker 悬空层与 BuildKit 缓存，恢复初始状态:
+ark clean
+
+# 连同本地历史关联的 Docker 镜像一并清理:
+ark clean --docker
+```
+
+### 9. 自我升级 (Self-Update with CDN Failover)
 ```bash
 # 自动检测 GitHub 最新 Release 并通过国内镜像源自动容灾重试下载更新自身:
 ark update
@@ -163,7 +172,7 @@ ark version
 ark update https://github.com/duorameng/ark/releases/download/v1.0.0/ark-linux-amd64
 ```
 
-### 9. Shell 自动补全 (Auto-Completion)
+### 10. Shell 自动补全 (Auto-Completion)
 ```bash
 # 一键自动安装补全到当前 Shell 配置文件 (~/.bashrc 或 ~/.zshrc):
 ark completion install

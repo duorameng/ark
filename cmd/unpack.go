@@ -61,25 +61,22 @@ func runUnpack(args []string) {
 		fmt.Printf("[目标] 单集装箱: %s\n", targetPath)
 		fmt.Printf("[交付] 恢复目录: %s\n", destDir)
 
-		tarPath := targetPath
 		if strings.HasSuffix(fname, ".dat") || strings.HasSuffix(fname, ".enc") {
 			if len(sealPass) == 0 {
 				fmt.Fprintln(os.Stderr, "[-] 未提供有效安全密钥，无法开启密闭集装箱！")
 				os.Exit(1)
 			}
-			decryptedTar := filepath.Join(tmpDir, modName+".tar")
-			fmt.Printf("-> 正在开启安全封条 (%s)...\n", fname)
-			if err := archive.UnsealFile(targetPath, decryptedTar, sealPass); err != nil {
-				fmt.Fprintf(os.Stderr, "[-] 解封失败: %v\n", err)
+			fmt.Printf("-> 正在开启安全封条并流式还原 (%s -> %s, 零中间解密文件落盘)...\n", fname, destDir)
+			if err := archive.UnsealAndUnpackStream(targetPath, destDir, sealPass); err != nil {
+				fmt.Fprintf(os.Stderr, "[-] 解封还原失败: %v\n", err)
 				os.Exit(1)
 			}
-			tarPath = decryptedTar
-		}
-
-		fmt.Printf("-> 正在还原舱位货物到 %s (保留 UID/GID 数字所有者与权限)...\n", destDir)
-		if err := archive.UnpackTar(tarPath, destDir); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 还原解包失败: %v\n", err)
-			os.Exit(1)
+		} else {
+			fmt.Printf("-> 正在还原舱位货物到 %s (保留 UID/GID 数字所有者与权限)...\n", destDir)
+			if err := archive.UnpackTar(targetPath, destDir); err != nil {
+				fmt.Fprintf(os.Stderr, "[-] 还原解包失败: %v\n", err)
+				os.Exit(1)
+			}
 		}
 		fmt.Printf("✓ 舱位 [%s] 货物已完整归位！\n", modName)
 	} else {
@@ -103,7 +100,7 @@ func runUnpack(args []string) {
 				continue
 			}
 			fname := e.Name()
-			if !strings.HasSuffix(fname, ".dat") && !strings.HasSuffix(fname, ".tar") {
+			if !strings.HasSuffix(fname, ".dat") && !strings.HasSuffix(fname, ".tar") && !strings.HasSuffix(fname, ".tar.gz") && !strings.HasSuffix(fname, ".tgz") && !strings.HasSuffix(fname, ".enc") {
 				continue
 			}
 
@@ -116,25 +113,22 @@ func runUnpack(args []string) {
 			targetSubDir := filepath.Join(destDir, folderName)
 			fullFile := filepath.Join(targetPath, fname)
 
-			tarPath := fullFile
 			if strings.HasSuffix(fname, ".dat") || strings.HasSuffix(fname, ".enc") {
 				if len(sealPass) == 0 {
 					fmt.Printf("[!] 跳过密闭集装箱 %s (缺少安全密钥)\n", fname)
 					continue
 				}
-				decryptedTar := filepath.Join(tmpDir, modName+".tar")
-				fmt.Printf("-> 正在开启安全封条 (%s)...\n", fname)
-				if err := archive.UnsealFile(fullFile, decryptedTar, sealPass); err != nil {
+				fmt.Printf("-> 正在开启安全封条并流式还原 (%s -> %s, 零中间解密文件落盘)...\n", fname, targetSubDir)
+				if err := archive.UnsealAndUnpackStream(fullFile, targetSubDir, sealPass); err != nil {
 					fmt.Printf("[-] 解封 %s 失败: %v\n", fname, err)
 					continue
 				}
-				tarPath = decryptedTar
-			}
-
-			fmt.Printf("-> 正在还原舱位货物 [%s] 到 %s...\n", folderName, targetSubDir)
-			if err := archive.UnpackTar(tarPath, targetSubDir); err != nil {
-				fmt.Printf("[-] 还原 %s 失败: %v\n", folderName, err)
-				continue
+			} else {
+				fmt.Printf("-> 正在还原舱位货物 [%s] 到 %s...\n", folderName, targetSubDir)
+				if err := archive.UnpackTar(fullFile, targetSubDir); err != nil {
+					fmt.Printf("[-] 还原 %s 失败: %v\n", folderName, err)
+					continue
+				}
 			}
 			fmt.Printf("   ✓ 舱位 [%s] 货物已完整归位！\n", folderName)
 		}

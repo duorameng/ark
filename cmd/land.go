@@ -134,22 +134,19 @@ func runLand(args []string) {
 		_ = os.MkdirAll(targetSubDir, 0755)
 
 		fullFile := filepath.Join(tmpLandDir, fname)
-		tarPath := fullFile
 
-		if strings.HasSuffix(fname, ".dat") || strings.HasSuffix(fname, ".tar.enc") {
-			decryptedTar := filepath.Join(tmpLandDir, modName+".tar")
-			fmt.Printf("-> 正在开启安全封条 (%s)...\n", fname)
-			if err := archive.UnsealFile(fullFile, decryptedTar, sealPass); err != nil {
-				fmt.Fprintf(os.Stderr, "[-] 解封失败: %v\n", err)
+		if strings.HasSuffix(fname, ".dat") || strings.HasSuffix(fname, ".tar.enc") || strings.HasSuffix(fname, ".enc") {
+			fmt.Printf("-> 正在开封并流式还原 (%s -> %s, 零中间解密文件落盘)...\n", fname, targetSubDir)
+			if err := archive.UnsealAndUnpackStream(fullFile, targetSubDir, sealPass); err != nil {
+				fmt.Fprintf(os.Stderr, "[-] 解封还原失败: %v\n", err)
 				os.Exit(1)
 			}
-			tarPath = decryptedTar
-		}
-
-		fmt.Printf("-> 正在还原舱位货物: %s 到 %s...\n", folderName, targetSubDir)
-		if err := archive.UnpackTar(tarPath, targetSubDir); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 还原解包失败: %v\n", err)
-			os.Exit(1)
+		} else {
+			fmt.Printf("-> 正在解包还原舱位货物: %s 到 %s...\n", folderName, targetSubDir)
+			if err := archive.UnpackTar(fullFile, targetSubDir); err != nil {
+				fmt.Fprintf(os.Stderr, "[-] 还原解包失败: %v\n", err)
+				os.Exit(1)
+			}
 		}
 		fmt.Printf("   ✓ 舱位 [%s] 货物已完整归位！\n", folderName)
 	}

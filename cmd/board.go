@@ -189,6 +189,12 @@ func runBoard(args []string, dryRun bool) {
 	_ = os.MkdirAll(cacheDir, 0755)
 	_ = os.MkdirAll(tmpDir, 0755)
 
+	if shouldClean {
+		fmt.Println("-> 正在执行构建前磁盘预清理 (自动释放历史中断或旧版本悬空层与构建缓存)...")
+		_ = docker.PruneDanglingImages()
+		_ = docker.PruneBuildCache()
+	}
+
 	var sealPass []byte
 	if cfg.Encrypt {
 		pass, err := resolveSealKey(ws, true, cliKey)
@@ -206,6 +212,7 @@ func runBoard(args []string, dryRun bool) {
 	}
 
 	sources := cfg.SortedSources()
+	cleanOrphanCacheFiles(cacheDir, sources)
 	fmt.Println("\n------------------- 正在清点各货舱集装箱 (按变动频率排序) -------------------")
 
 	layerFiles := make([]string, 0, len(sources))
@@ -229,8 +236,7 @@ func runBoard(args []string, dryRun bool) {
 			continue
 		}
 
-		tarFile := filepath.Join(cacheDir, src.ID+".tar")
-		layerFile := tarFile
+		layerFile := filepath.Join(cacheDir, src.ID+".tar.gz")
 		if cfg.Encrypt {
 			layerFile = filepath.Join(cacheDir, src.ID+".dat")
 		}
@@ -246,19 +252,19 @@ func runBoard(args []string, dryRun bool) {
 		if isCached {
 			fmt.Printf("   [封条完好 ✓] 舱位货物无变化，直接复用已有集装箱 (指纹: %s...)\n", dirInfo.Hash[:12])
 		} else {
-			fmt.Println("   [重新装箱 ⚡] 舱位货物有变动或首次装载，开始打包加封...")
-			if err := archive.PackTar(srcPath, tarFile); err != nil {
-				fmt.Fprintf(os.Stderr, "[-] 打包 tar 失败: %v\n", err)
-				os.Exit(1)
-			}
-
+			fmt.Println("   [重新装箱 ⚡] 舱位货物有变动或首次装载，开始流式加封...")
 			if cfg.Encrypt {
-				fmt.Println("   正在施加安全密封 (AES-256 密闭处理)...")
-				if err := archive.SealFile(tarFile, layerFile, sealPass); err != nil {
-					fmt.Fprintf(os.Stderr, "[-] 安全加密失败: %v\n", err)
+				fmt.Println("   正在施加安全密封 (内存流式 Tar -> Gzip -> AES-256 密闭处理，零中间磁盘文件)...")
+				if err := archive.PackAndSealStream(srcPath, layerFile, sealPass); err != nil {
+					fmt.Fprintf(os.Stderr, "[-] 安全流式打包加密失败: %v\n", err)
 					os.Exit(1)
 				}
-				_ = os.Remove(tarFile)
+			} else {
+				fmt.Println("   正在流式打包压缩 (Tar -> Gzip)...")
+				if err := archive.PackTarGz(srcPath, layerFile); err != nil {
+					fmt.Fprintf(os.Stderr, "[-] 打包压缩失败: %v\n", err)
+					os.Exit(1)
+				}
 			}
 
 			fi, _ := os.Stat(layerFile)
@@ -266,7 +272,7 @@ func runBoard(args []string, dryRun bool) {
 			if fi.Size() > 1024*1024 {
 				sizeStr = fmt.Sprintf("%.1f MB", float64(fi.Size())/1024/1024)
 			}
-			fmt.Printf("   装箱完毕: %s (%s)\n", filepath.Base(layerFile), sizeStr)
+			fmt.Printf("   装箱完毕: %s (%s, 压缩加封)\n", filepath.Base(layerFile), sizeStr)
 		}
 
 		layerFiles = append(layerFiles, layerFile)
@@ -282,6 +288,10 @@ func runBoard(args []string, dryRun bool) {
 	if mData, err := json.MarshalIndent(newManifest, "", "  "); err == nil {
 		_ = os.WriteFile(manifestPath, mData, 0644)
 	}
+
+	// 在 cacheDir 中维护专属 .dockerignore，避免 Docker daemon 扫描传输无关上下文
+	dockerignorePath := filepath.Join(cacheDir, ".dockerignore")
+	_ = os.WriteFile(dockerignorePath, []byte("*\n!*.dat\n!*.tar.gz\n!*.tar\n!*.enc\n"), 0644)
 
 	dockerfilePath := filepath.Join(tmpDir, "Dockerfile")
 	if err := docker.GenerateDockerfile(dockerfilePath, layerFiles); err != nil {
@@ -300,15 +310,6 @@ func runBoard(args []string, dryRun bool) {
 		return
 	}
 
-	fmt.Println("\n==> 正在使用 BuildKit 进行班轮集装箱独立分层快照构建...")
-	fullTag := fmt.Sprintf("%s:%s", cfg.Repository, tag)
-
-	if err := docker.Build(dockerfilePath, ws, fullTag); err != nil {
-		fmt.Fprintf(os.Stderr, "[-] Docker 构建失败: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("✓ 班轮快照封装成功！")
-
 	token := loadToken(ws)
 	parts := strings.Split(cfg.Repository, "/")
 	regHost := "ghcr.io"
@@ -325,14 +326,37 @@ func runBoard(args []string, dryRun bool) {
 		fmt.Println("[!] 提示: 未检测到通行凭据。如需启航，请在 .env 中配置 GH_TOKEN。")
 	}
 
-	fmt.Printf("\n==> 班轮正在出港登船: %s...\n", fullTag)
-	fmt.Println("【免复传机制】：封条未变动的集装箱将显示 'Layer already exists'，0 流量瞬间交付！")
+	fullTag := fmt.Sprintf("%s:%s", cfg.Repository, tag)
+	pushedDirectly := false
 
-	if err := docker.PushWithRetry(fullTag, retryCount, 3*time.Second); err != nil {
-		fmt.Fprintf(os.Stderr, "[-] 航次推送失败 (已尝试 %d 次): %v\n", retryCount, err)
-		os.Exit(1)
+	fmt.Println("\n==> 正在使用 BuildKit 进行班轮集装箱独立分层快照构建与交付...")
+	// 优先尝试 Direct Push (分层构建完成立即推流到远程 Registry，跳过本地导出，本地镜像磁盘占用 0 字节！)
+	if token != "" {
+		fmt.Println("==> 启用流式直推模式 (Direct Push): 免本地镜像落盘，分层直推远端...")
+		if err := docker.BuildWithDirectPush(dockerfilePath, cacheDir, fullTag); err == nil {
+			fmt.Println("✓ 班轮快照流式直推交付成功 (本地 0 磁盘镜像占用)！")
+			pushedDirectly = true
+		} else {
+			fmt.Printf("[!] 提示: 流式直推降级为本地构建推送: %v\n", err)
+		}
 	}
-	fmt.Println("✓ 航次交付登船成功！")
+
+	if !pushedDirectly {
+		if err := docker.Build(dockerfilePath, cacheDir, fullTag); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] Docker 构建失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("✓ 班轮快照封装成功！")
+
+		fmt.Printf("\n==> 班轮正在出港登船: %s...\n", fullTag)
+		fmt.Println("【免复传机制】：封条未变动的集装箱将显示 'Layer already exists'，0 流量瞬间交付！")
+
+		if err := docker.PushWithRetry(fullTag, retryCount, 3*time.Second); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 航次推送失败 (已尝试 %d 次): %v\n", retryCount, err)
+			os.Exit(1)
+		}
+		fmt.Println("✓ 航次交付登船成功！")
+	}
 
 	fmt.Printf("\n------------------- 正在维护 [%s] 分类的历史航次配额 -------------------\n", category)
 	if token != "" && cfg.RetentionCount > 0 {
@@ -344,14 +368,16 @@ func runBoard(args []string, dryRun bool) {
 
 	if shouldClean {
 		fmt.Println("\n------------------- 正在清理本地构建缓存与临时数据 -------------------")
-		fmt.Printf("-> 正在移除本地快照镜像: %s...\n", fullTag)
-		if err := docker.RemoveImage(fullTag); err == nil {
-			fmt.Printf("   ✓ 已成功删除本地 Docker 镜像，释放磁盘空间: %s\n", fullTag)
-		} else {
-			fmt.Printf("   [!] 提示: 本地镜像处理完成: %v\n", err)
+		if !pushedDirectly {
+			fmt.Printf("-> 正在移除本地快照镜像: %s...\n", fullTag)
+			if err := docker.RemoveImage(fullTag); err == nil {
+				fmt.Printf("   ✓ 已成功删除本地 Docker 镜像，释放磁盘空间: %s\n", fullTag)
+			} else {
+				fmt.Printf("   [!] 提示: 本地镜像处理完成: %v\n", err)
+			}
 		}
 
-		fmt.Println("-> 正在清理 Docker 悬空镜像与 BuildKit 构建缓存...")
+		fmt.Println("-> 正在深度清理 Docker 悬空镜像与 BuildKit 构建缓存...")
 		_ = docker.PruneDanglingImages()
 		_ = docker.PruneBuildCache()
 		fmt.Println("   ✓ 本地 Docker 构建缓存与中间层清理完成！")
@@ -367,9 +393,10 @@ func runBoard(args []string, dryRun bool) {
 func cleanOrphanCacheFiles(cacheDir string, sources []config.Source) {
 	validFiles := make(map[string]bool)
 	validFiles["manifest.json"] = true
+	validFiles[".dockerignore"] = true
 	for _, s := range sources {
 		validFiles[s.ID+".dat"] = true
-		validFiles[s.ID+".tar"] = true
+		validFiles[s.ID+".tar.gz"] = true
 	}
 
 	entries, err := os.ReadDir(cacheDir)
@@ -388,6 +415,6 @@ func cleanOrphanCacheFiles(cacheDir string, sources []config.Source) {
 		}
 	}
 	if cleanedCount > 0 {
-		fmt.Printf("   ✓ 已清理 %d 个陈旧废弃的货舱数据缓存\n", cleanedCount)
+		fmt.Printf("   ✓ 已清理 %d 个陈旧废弃或未压缩的历史数据缓存\n", cleanedCount)
 	}
 }

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// GenerateDockerfile 生成独立分层的 BuildKit Dockerfile
+// GenerateDockerfile 生成独立分层的 BuildKit Dockerfile (构建上下文隔离在 cache 目录)
 func GenerateDockerfile(destPath string, layerFiles []string) error {
 	var sb strings.Builder
 	sb.WriteString("# syntax=docker/dockerfile:1.4\n")
@@ -17,7 +17,7 @@ func GenerateDockerfile(destPath string, layerFiles []string) error {
 
 	for _, file := range layerFiles {
 		base := filepath.Base(file)
-		sb.WriteString(fmt.Sprintf("COPY --link cache/%s /cargo/%s\n", base, base))
+		sb.WriteString(fmt.Sprintf("COPY --link %s /cargo/%s\n", base, base))
 	}
 
 	sb.WriteString("CMD [\"ark-voyage\"]\n")
@@ -26,12 +26,12 @@ func GenerateDockerfile(destPath string, layerFiles []string) error {
 }
 
 // Build 运行 Docker BuildKit 构建独立分层快照镜像
-func Build(dockerfilePath, workspaceRoot string, tags ...string) error {
+func Build(dockerfilePath, contextDir string, tags ...string) error {
 	args := []string{"build", "-f", dockerfilePath}
 	for _, t := range tags {
 		args = append(args, "-t", t)
 	}
-	args = append(args, workspaceRoot)
+	args = append(args, contextDir)
 
 	cmd := exec.Command("docker", args...)
 	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
@@ -39,6 +39,27 @@ func Build(dockerfilePath, workspaceRoot string, tags ...string) error {
 	cmd.Stderr = os.Stderr
 
 	return cmd.Run()
+}
+
+// BuildWithDirectPush 尝试使用 BuildKit --push 将镜像分层直接流式推送到远程仓库
+// 完全跳过本地 Docker 镜像存储，本地磁盘占用直接降为 0 字节！
+func BuildWithDirectPush(dockerfilePath, contextDir, fullTag string) error {
+	args := []string{"buildx", "build", "--push", "-f", dockerfilePath, "-t", fullTag, contextDir}
+	cmd := exec.Command("docker", args...)
+	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err == nil {
+		return nil
+	}
+
+	// 降级尝试 docker build --push
+	args2 := []string{"build", "--push", "-f", dockerfilePath, "-t", fullTag, contextDir}
+	cmd2 := exec.Command("docker", args2...)
+	cmd2.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
+	cmd2.Stdout = os.Stdout
+	cmd2.Stderr = os.Stderr
+	return cmd2.Run()
 }
 
 // Login 使用 GH_TOKEN 执行 docker login
@@ -142,7 +163,7 @@ func PruneDanglingImages() error {
 
 // PruneBuildCache 清理 BuildKit 构建缓存
 func PruneBuildCache() error {
-	cmd := exec.Command("docker", "builder", "prune", "-f")
+	cmd := exec.Command("docker", "builder", "prune", "-a", "-f")
 	return cmd.Run()
 }
 
