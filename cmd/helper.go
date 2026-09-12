@@ -37,29 +37,38 @@ func getWorkspaceRoot() string {
 	return cwd
 }
 
+// loadEnvFile 从工作区加载 .env 文件，并将其中未定义的配置注入至进程环境变量
+func loadEnvFile(workspaceRoot string) {
+	envPath := filepath.Join(workspaceRoot, ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			k := strings.TrimSpace(parts[0])
+			v := strings.Trim(strings.TrimSpace(parts[1]), `"' `)
+			if os.Getenv(k) == "" && v != "" {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}
+}
+
 func loadToken(workspaceRoot string) string {
+	loadEnvFile(workspaceRoot)
+
 	if token := os.Getenv("GH_TOKEN"); token != "" {
 		return strings.TrimSpace(token)
 	}
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
 		return strings.TrimSpace(token)
-	}
-
-	envPath := filepath.Join(workspaceRoot, ".env")
-	if data, err := os.ReadFile(envPath); err == nil {
-		lines := strings.Split(string(data), "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "GH_TOKEN=") || strings.HasPrefix(line, "GITHUB_TOKEN=") {
-				parts := strings.SplitN(line, "=", 2)
-				if len(parts) == 2 {
-					val := strings.Trim(parts[1], `"' `)
-					if val != "" {
-						return val
-					}
-				}
-			}
-		}
 	}
 
 	cmd := exec.Command("gh", "auth", "token")

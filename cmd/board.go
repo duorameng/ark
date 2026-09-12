@@ -161,6 +161,7 @@ func runBoard(args []string, dryRun bool) {
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
+	loadEnvFile(ws)
 	configPath := filepath.Join(ws, "config.json")
 	cfg, err := config.Load(configPath)
 	if err != nil {

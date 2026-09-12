@@ -21,6 +21,7 @@ func runCheck(args []string) {
 	_ = cleanedArgs
 
 	ws := getWorkspaceRoot()
+	loadEnvFile(ws)
 
 	fmt.Println("================================================================")
 	fmt.Println("          🩺 Ark 航运配置与系统健康体检 (Diagnostic Check)     ")
