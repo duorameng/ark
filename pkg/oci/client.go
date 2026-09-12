@@ -51,6 +51,7 @@ func NewClient(fullRepo, username, token string) (*Client, error) {
 	}
 
 	transport := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,

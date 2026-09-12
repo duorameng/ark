@@ -32,6 +32,7 @@ type Config struct {
 	RetentionCount    int      `json:"retention_count"`
 	Encrypt           bool     `json:"encrypt"`
 	TagPrecision      string   `json:"tag_precision,omitempty"`        // 时间标签精度: day(天) / second(秒，默认) / minute(分)
+	FixedTag          string   `json:"fixed_tag,omitempty"`            // 固定 Tag (如 "latest")，配置后每次备份覆盖此 Tag，不生成时间戳
 	PushRetry         int      `json:"push_retry,omitempty"`           // docker push 失败重试次数 (默认 3 次)
 	CleanAfterPush    *bool    `json:"clean_after_push,omitempty"`     // build/push 完成后是否自动清理本地镜像与构建缓存 (默认 true)
 	CleanAllAfterPush *bool    `json:"clean_all_after_push,omitempty"` // build/push 完成后是否彻底清空 cache/tmp 并重置初始状态 (默认 false)

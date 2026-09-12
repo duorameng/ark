@@ -50,16 +50,38 @@ func loadEnvFile(workspaceRoot string) {
 			}
 		}
 	}
+
+	// 若配置了 ARK_PROXY 别名，自动同步注入至标准网络代理环境变量
+	if p := strings.TrimSpace(os.Getenv(config.EnvArkProxy)); p != "" {
+		if os.Getenv("HTTPS_PROXY") == "" {
+			_ = os.Setenv("HTTPS_PROXY", p)
+		}
+		if os.Getenv("HTTP_PROXY") == "" {
+			_ = os.Setenv("HTTP_PROXY", p)
+		}
+		if os.Getenv("ALL_PROXY") == "" {
+			_ = os.Setenv("ALL_PROXY", p)
+		}
+	}
 }
 
-// loadToken 获取 GitHub 访问凭据 (按 .env -> 环境变量 -> gh CLI 顺序检索)
+// loadToken 获取镜像仓库访问凭据 (按 ARK_TOKEN -> ARK_PASSWORD -> GH_TOKEN -> GITHUB_TOKEN -> DOCKER_PASSWORD -> gh CLI 顺序检索)
 func loadToken(workspaceRoot string) string {
 	loadEnvFile(workspaceRoot)
 
+	if token := os.Getenv(config.EnvArkToken); token != "" {
+		return strings.TrimSpace(token)
+	}
+	if token := os.Getenv(config.EnvArkPassword); token != "" {
+		return strings.TrimSpace(token)
+	}
 	if token := os.Getenv(config.EnvGhToken); token != "" {
 		return strings.TrimSpace(token)
 	}
 	if token := os.Getenv(config.EnvGithubToken); token != "" {
+		return strings.TrimSpace(token)
+	}
+	if token := os.Getenv("DOCKER_PASSWORD"); token != "" {
 		return strings.TrimSpace(token)
 	}
 
@@ -72,6 +94,24 @@ func loadToken(workspaceRoot string) string {
 	}
 
 	return ""
+}
+
+// resolveRegistryUser 解析登录镜像注册表的用户名: ARK_USERNAME > DOCKER_USER > 仓库第二段路径 > oauth2
+func resolveRegistryUser(repo string) string {
+	if u := strings.TrimSpace(os.Getenv(config.EnvArkUsername)); u != "" {
+		return u
+	}
+	if u := strings.TrimSpace(os.Getenv("DOCKER_USER")); u != "" {
+		return u
+	}
+	if u := strings.TrimSpace(os.Getenv("DOCKER_USERNAME")); u != "" {
+		return u
+	}
+	parts := strings.Split(repo, "/")
+	if len(parts) >= 2 && parts[1] != "" {
+		return parts[1]
+	}
+	return "oauth2"
 }
 
 // resolveRepository 综合解析镜像仓库名称: 命令行参数 > 环境变量 > 配置文件
@@ -89,6 +129,208 @@ func resolveRepository(cfgRepo, cliRepo string) string {
 		return strings.TrimSpace(cfgRepo)
 	}
 	return config.DefaultRepository
+}
+
+// RegistryTarget 镜像港口目标结构定义 (支持多云与别名快速选路)
+type RegistryTarget struct {
+	Key         string // "aliyun", "github", "custom", "default"
+	DisplayName string // 友好展示名称
+	Repository  string // 完整仓库地址 (如 registry.cn-hangzhou.aliyuncs.com/xxx/ark)
+	Username    string // 登录用户名
+	Password    string // 密码或访问令牌
+	IsGHCR      bool   // 是否为 GitHub Packages (支持专属 REST API 轮转)
+}
+
+// isTargetKeyword 判断参数是否为目标别名关键字
+func isTargetKeyword(arg string) bool {
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "ali", "aliyun", "acr", "阿里", "阿里云",
+		"gh", "github", "ghcr",
+		"both", "all", "all-targets", "双推", "双向":
+		return true
+	default:
+		return false
+	}
+}
+
+// extractTargetFlag 从命令行参数中提取目标别名指示: --to, --target, --both, -T 或独立的别名关键词
+func extractTargetFlag(args []string) ([]string, string) {
+	var cleaned []string
+	target := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--to" || arg == "--target" || arg == "-T":
+			if i+1 < len(args) {
+				target = args[i+1]
+				i++
+				continue
+			}
+		case strings.HasPrefix(arg, "--to="):
+			target = strings.TrimPrefix(arg, "--to=")
+			continue
+		case strings.HasPrefix(arg, "--target="):
+			target = strings.TrimPrefix(arg, "--target=")
+			continue
+		case strings.HasPrefix(arg, "-T="):
+			target = strings.TrimPrefix(arg, "-T=")
+			continue
+		case arg == "--both" || arg == "--all-targets":
+			target = "both"
+			continue
+		case isTargetKeyword(arg):
+			target = arg
+			continue
+		default:
+			cleaned = append(cleaned, arg)
+		}
+	}
+	return cleaned, target
+}
+
+// resolveRegistryTargets 综合解析最终推送目标列表 (支持别名路由、默认回退与双推模式)
+func resolveRegistryTargets(ws, cliTarget, cliRepo, defaultRepo string) []RegistryTarget {
+	loadEnvFile(ws)
+
+	// 1. 若命令行显式传入了具体 URL 仓库地址 (含 "/" 且非纯别名)，作为自定义单个目标
+	if strings.Contains(cliRepo, "/") && !isTargetKeyword(cliRepo) {
+		isGHCR := strings.HasPrefix(cliRepo, "ghcr.io") || strings.Contains(cliRepo, "github")
+		name := "自定义 OCI 注册表"
+		if isGHCR {
+			name = "GitHub Packages (GHCR)"
+		} else if strings.Contains(cliRepo, "aliyuncs.com") {
+			name = "阿里云容器镜像服务 (ACR)"
+		}
+		return []RegistryTarget{{
+			Key:         "custom",
+			DisplayName: name,
+			Repository:  cliRepo,
+			Username:    resolveRegistryUser(cliRepo),
+			Password:    loadToken(ws),
+			IsGHCR:      isGHCR,
+		}}
+	}
+
+	targetKey := strings.ToLower(strings.TrimSpace(cliTarget))
+	if targetKey == "" && isTargetKeyword(cliRepo) {
+		targetKey = strings.ToLower(strings.TrimSpace(cliRepo))
+	}
+	if targetKey == "" {
+		targetKey = strings.ToLower(strings.TrimSpace(os.Getenv(config.EnvArkTarget)))
+	}
+
+	getAliyunTarget := func() (RegistryTarget, bool) {
+		repo := strings.TrimSpace(os.Getenv(config.EnvAliyunRepository))
+		if repo == "" {
+			repo = strings.TrimSpace(os.Getenv("ARK_ALIYUN_REPOSITORY"))
+		}
+		if repo == "" && strings.Contains(defaultRepo, "aliyuncs.com") {
+			repo = defaultRepo
+		}
+		if repo == "" {
+			return RegistryTarget{}, false
+		}
+		user := strings.TrimSpace(os.Getenv(config.EnvAliyunUsername))
+		if user == "" {
+			user = strings.TrimSpace(os.Getenv("ARK_ALIYUN_USERNAME"))
+		}
+		if user == "" {
+			user = resolveRegistryUser(repo)
+		}
+		pass := strings.TrimSpace(os.Getenv(config.EnvAliyunPassword))
+		if pass == "" {
+			pass = strings.TrimSpace(os.Getenv("ARK_ALIYUN_PASSWORD"))
+		}
+		if pass == "" {
+			pass = loadToken(ws)
+		}
+		return RegistryTarget{
+			Key:         "aliyun",
+			DisplayName: "阿里云容器镜像服务 (ACR)",
+			Repository:  repo,
+			Username:    user,
+			Password:    pass,
+			IsGHCR:      false,
+		}, true
+	}
+
+	getGithubTarget := func() (RegistryTarget, bool) {
+		repo := strings.TrimSpace(os.Getenv(config.EnvGithubRepository))
+		if repo == "" {
+			repo = strings.TrimSpace(os.Getenv("ARK_GITHUB_REPOSITORY"))
+		}
+		if repo == "" && (strings.Contains(defaultRepo, "ghcr.io") || defaultRepo == config.DefaultRepository) {
+			repo = defaultRepo
+		}
+		if repo == "" {
+			repo = config.DefaultRepository
+		}
+		user := resolveRegistryUser(repo)
+		pass := strings.TrimSpace(os.Getenv(config.EnvGhToken))
+		if pass == "" {
+			pass = strings.TrimSpace(os.Getenv(config.EnvGithubToken))
+		}
+		if pass == "" {
+			pass = loadToken(ws)
+		}
+		return RegistryTarget{
+			Key:         "github",
+			DisplayName: "GitHub Packages (GHCR)",
+			Repository:  repo,
+			Username:    user,
+			Password:    pass,
+			IsGHCR:      true,
+		}, true
+	}
+
+	switch targetKey {
+	case "both", "all", "all-targets", "双推", "双向":
+		var list []RegistryTarget
+		if ali, ok := getAliyunTarget(); ok {
+			list = append(list, ali)
+		} else {
+			fmt.Println("[!] 提示: 双推模式未检测到阿里云配置 (ALIYUN_REPOSITORY)，将跳过阿里云目标。")
+		}
+		if gh, ok := getGithubTarget(); ok {
+			list = append(list, gh)
+		} else {
+			fmt.Println("[!] 提示: 双推模式未检测到 GitHub 配置 (GITHUB_REPOSITORY)，将跳过 GitHub 目标。")
+		}
+		if len(list) > 0 {
+			return list
+		}
+		fmt.Fprintf(os.Stderr, "[-] 双推模式失败: 既未配置阿里云 (ALIYUN_REPOSITORY) 也未配置 GitHub (GITHUB_REPOSITORY)\n")
+		return nil
+	case "ali", "aliyun", "acr", "阿里", "阿里云":
+		if ali, ok := getAliyunTarget(); ok {
+			return []RegistryTarget{ali}
+		}
+		fmt.Fprintf(os.Stderr, "[-] 未识别到阿里云 ACR 仓库地址，请在 .env 中配置 ALIYUN_REPOSITORY (例如: registry.cn-hangzhou.aliyuncs.com/your-ns/ark)\n")
+		return nil
+	case "gh", "github", "ghcr":
+		if gh, ok := getGithubTarget(); ok {
+			return []RegistryTarget{gh}
+		}
+		fmt.Fprintf(os.Stderr, "[-] 未识别到 GitHub 仓库地址，请在 .env 中配置 GITHUB_REPOSITORY (例如: ghcr.io/your-user/ark)\n")
+		return nil
+	}
+
+	// 兜底回退：使用 defaultRepo
+	isGHCR := strings.HasPrefix(defaultRepo, "ghcr.io") || strings.Contains(defaultRepo, "github")
+	name := "默认镜像注册表"
+	if isGHCR {
+		name = "GitHub Packages (GHCR)"
+	} else if strings.Contains(defaultRepo, "aliyuncs.com") {
+		name = "阿里云容器镜像服务 (ACR)"
+	}
+	return []RegistryTarget{{
+		Key:         "default",
+		DisplayName: name,
+		Repository:  defaultRepo,
+		Username:    resolveRegistryUser(defaultRepo),
+		Password:    loadToken(ws),
+		IsGHCR:      isGHCR,
+	}}
 }
 
 // extractRepoFlag 从命令行参数中提取 --repo, --repository, --image, -i 参数
@@ -353,10 +595,26 @@ func LoadAppConfig(ws, cliRepo string) (*config.Config, bool, error) {
 			cfg.Sources = envSources
 		}
 
+		fixedTag := strings.TrimSpace(os.Getenv(config.EnvArkTag))
+		if fixedTag == "" {
+			fixedTag = strings.TrimSpace(os.Getenv(config.EnvArkFixedTag))
+		}
+		if fixedTag != "" {
+			cfg.FixedTag = fixedTag
+		}
+
 		return cfg, false, err
 	}
 
-	// 若 config.json 存在，但环境变量指定了保留个数，则允许环境变量覆盖
+	// 若 config.json 存在，但环境变量指定了固定 Tag 或保留个数，则允许环境变量覆盖
+	fixedTag := strings.TrimSpace(os.Getenv(config.EnvArkTag))
+	if fixedTag == "" {
+		fixedTag = strings.TrimSpace(os.Getenv(config.EnvArkFixedTag))
+	}
+	if fixedTag != "" {
+		cfg.FixedTag = fixedTag
+	}
+
 	if val := strings.TrimSpace(os.Getenv(config.EnvArkRetentionCount)); val != "" {
 		if count, err := strconv.Atoi(val); err == nil && count > 0 {
 			cfg.RetentionCount = count

@@ -132,15 +132,19 @@ func runClean(args []string) {
 
 	// 6. 如果指定了 --untagged 或 --all，扫描并清理远端孤立未打标版本
 	if cleanUntagged {
-		fmt.Println("\n------------------- 正在扫描远端 GitHub 镜像港口 -------------------")
 		repo := cfg.Repository
 		token := loadToken(ws)
+		isGHCR := strings.HasPrefix(repo, "ghcr.io") || strings.Contains(repo, "github")
 
-		if repo == "" {
+		if !isGHCR {
+			fmt.Println("\n------------------- 通用 OCI 镜像港口 -------------------")
+			fmt.Println("✓ 当前目标为第三方通用 OCI 镜像注册表，跳过 GitHub 专属 untagged API 清理。")
+		} else if repo == "" {
 			fmt.Println("[-] 未配置远端仓库地址 (Repository)，跳过远端未打标版本清理。")
 		} else if token == "" {
 			fmt.Println("[-] 未检测到通行凭据 GH_TOKEN，无法清理远端 GitHub Packages 悬空版本。")
 		} else {
+			fmt.Println("\n------------------- 正在扫描远端 GitHub 镜像港口 -------------------")
 			fmt.Printf("-> 正在扫描远端仓库 [%s] 孤立未打标版本 (Untagged Versions)...\n", repo)
 			ghClient := github.NewClient(repo, token)
 			deletedCount, err := ghClient.PruneUntaggedVersions()

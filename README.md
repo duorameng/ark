@@ -83,6 +83,9 @@ ark/
 | **试运行演练 (Dry Run)** | `./ark dry` | 检查冷热排序、UUID 根同级文件层、Tree Hash |
 | **即时扫描指定目录** | `./ark scan /path/to/project` | 扫描并生成 `config.json` |
 | **按天定时备份** | `./ark board day` 或 `./ark board --day` | 标签为 `vps-YYYYMMDD`，适合每日定时任务 |
+| **快捷推送到阿里云** | `./ark board ali` 或 `./ark board --to ali` | 自动切换至国内阿里云 ACR 极速直推 |
+| **快捷推送到 GitHub** | `./ark board gh` 或 `./ark board --to gh` | 自动切换至 GitHub Packages (GHCR) 通道 |
+| **多云双推异地多活** | `./ark board both` 或 `./ark board --both` | 一次打包，同时交付阿里云 (本地秒级还原) + GitHub (异地冷备) |
 | **自定义备份保留个数** | `./ark board --keep 7` 或 `.env` 设 `ARK_RETENTION_COUNT=7` | 自动轮转保留指定个数，顺带清理远端 untagged |
 | **多业务分类隔离备份** | `./ark board db day` | 独立分类 `db`，与 `vps` 互不干扰 |
 | **小磁盘极致干净模式** | `./ark board --clean-all` | 推送后彻底清空 `cache/` 与临时文件 |
@@ -195,7 +198,23 @@ Ark 提供 3 种指定备份路径的方式，满足从自动化运维到精细�
 ./ark board db day
 ```
 
-#### 3. 自定义固定版本标签
+#### 3. 固定 Tag 覆盖模式 (免手动清理旧 Tag，解决阿里云个人版无自动清理问题)
+如果您不需要保留多份历史版本，只希望远端始终保留最新的一份备份并自动覆盖：
+```bash
+# 方式 A: 命令行参数临时指定
+./ark board --latest          # 默认推送到 :latest，自动覆写上一版本
+./ark board ali latest        # 直推阿里云 ACR 并覆写 :latest
+./ark board both --latest     # 一次打包，双推至阿里云与 GitHub 覆盖 :latest
+
+# 靠岸拉取还原固定最新版本
+./ark land latest             # 从默认港位拉取 :latest
+./ark land ali latest         # 从阿里云拉取 :latest 恢复
+
+# 方式 B: 在 .env 中持久化配置
+ARK_TAG="latest"              # 配置后后续执行 ./ark board 默认覆盖 :latest
+```
+
+#### 4. 自定义固定版本标签
 ```bash
 # 显式指定航次标签
 ./ark board --tag v1.0.0-release

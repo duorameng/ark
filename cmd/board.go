@@ -49,10 +49,13 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 
 	var positional []string
 	explicitTag := ""
+	useLatest := false
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case arg == "--latest" || arg == "-l" || arg == "--fixed":
+			useLatest = true
 		case arg == "--day" || arg == "-d":
 			precision = "day"
 		case arg == "--second" || arg == "-s":
@@ -144,6 +147,8 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			p0 = parts[1]
 		}
 		switch strings.ToLower(p0) {
+		case "latest", "fixed", "固定":
+			useLatest = true
 		case "day", "d", "date", "天", "日":
 			precision = "day"
 		case "second", "sec", "s", "秒":
@@ -164,6 +169,8 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 		category = positional[0]
 		p1 := positional[1]
 		switch strings.ToLower(p1) {
+		case "latest", "fixed", "固定":
+			useLatest = true
 		case "day", "d", "date", "天", "日":
 			precision = "day"
 		case "second", "sec", "s", "秒":
@@ -178,6 +185,16 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 		}
 	}
 
+	if useLatest {
+		tag = "latest"
+		return tag, category, "fixed", retryCount, shouldClean, cleanAll
+	}
+
+	if cfg.FixedTag != "" {
+		tag = cfg.FixedTag
+		return tag, category, "fixed", retryCount, shouldClean, cleanAll
+	}
+
 	timeSuffix := timezone.GenerateTagTimeByPrecision(precision)
 	tag = fmt.Sprintf("%s-%s", category, timeSuffix)
 	return tag, category, precision, retryCount, shouldClean, cleanAll
@@ -186,6 +203,7 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 func runBoard(args []string, dryRun bool) {
 	cleanedArgs, cliEngine := extractEngineFlag(args)
 	cleanedArgs, cliKey := extractKeyFlag(cleanedArgs)
+	cleanedArgs, cliTarget := extractTargetFlag(cleanedArgs)
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
 	args = cleanedArgs
 
@@ -197,20 +215,38 @@ func runBoard(args []string, dryRun bool) {
 		os.Exit(1)
 	}
 
+	targets := resolveRegistryTargets(ws, cliTarget, cliRepo, cfg.Repository)
+	if len(targets) == 0 {
+		fmt.Fprintf(os.Stderr, "[-] 登船失败，未能识别到有效的推送目标港位\n")
+		os.Exit(1)
+	}
+
 	tag, category, precision, retryCount, shouldClean, cleanAll := parseBoardFlags(cfg, args)
 
 	fmt.Println("================================================================")
 	fmt.Println("          🚢 Ark 班轮装载登船系统 (Golang Engine)               ")
 	fmt.Println("================================================================")
-	fmt.Printf("[航次] 目的港位: %s\n", cfg.Repository)
+	if len(targets) == 1 {
+		fmt.Printf("[航次] 目的港位: %s (%s)\n", targets[0].Repository, targets[0].DisplayName)
+	} else {
+		fmt.Printf("[航次] 目的港位: 开启多云/双推异地多活模式 (同时交付 %d 个云端港口)\n", len(targets))
+		for idx, t := range targets {
+			fmt.Printf("       -> 港口 %d: %s (%s)\n", idx+1, t.Repository, t.DisplayName)
+		}
+	}
 	fmt.Printf("[场景] 所属分类: %s\n", category)
-	fmt.Printf("[航次] 班次编号: %s (时间精度: %s)\n", tag, precision)
+	if precision == "fixed" {
+		fmt.Printf("[航次] 班次编号: %s (模式: 固定 Tag 覆盖，自动覆写最新版本)\n", tag)
+		fmt.Println("[航次] 舱位配额: 固定 Tag 覆盖模式 (远端自动维持单版本最新，免手动清理)")
+	} else {
+		fmt.Printf("[航次] 班次编号: %s (时间精度: %s)\n", tag, precision)
+		fmt.Printf("[航次] 舱位配额: 该分类下保留最新 %d 个航次\n", cfg.RetentionCount)
+	}
 	engineDesc := "纯 Go 原生 OCI 极速直推 (Zero-Docker Pipeline, 0 额外落盘, 0 无效压缩)"
 	if cliEngine == "docker" {
 		engineDesc = "Docker BuildKit 构建流水线 (传统容器引擎)"
 	}
 	fmt.Printf("[引擎] 交付引擎: %s (%s)\n", strings.ToUpper(cliEngine), engineDesc)
-	fmt.Printf("[航次] 舱位配额: 该分类下保留最新 %d 个航次\n", cfg.RetentionCount)
 	fmt.Printf("[容灾] 推送重试配额: 失败自动重试 %d 次 (指数退避)\n", retryCount)
 	fmt.Printf("[安全] 货运封条: %v\n", cfg.Encrypt)
 	cleanModeStr := "释放本地构建临时数据 (保留增量缓存)"
@@ -425,31 +461,114 @@ func runBoard(args []string, dryRun bool) {
 		return
 	}
 
-	token := loadToken(ws)
-	parts := strings.Split(cfg.Repository, "/")
-	regHost := "ghcr.io"
-	regUser := "duorameng"
-	if len(parts) >= 2 {
-		regHost = parts[0]
-		regUser = parts[1]
+	ctx := context.Background()
+	for tIdx, target := range targets {
+		if len(targets) > 1 {
+			fmt.Printf("\n==================== 港口 [%d/%d]: %s (%s) ====================\n",
+				tIdx+1, len(targets), target.DisplayName, target.Repository)
+		}
+
+		err := pushSingleTarget(
+			ctx, target, tag, tarLayers,
+			cfgDigestAMD, cfgBytesAMD,
+			cfgDigestARM, cfgBytesARM,
+			mfDigestAMD, mfBytesAMD,
+			mfDigestARM, mfBytesARM,
+			indexBytes, retryCount,
+			cliEngine, tmpDir, cacheDir, layerFiles,
+			shouldClean, cleanAll,
+		)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 交付至港口 [%s] 失败: %v\n", target.DisplayName, err)
+			os.Exit(1)
+		}
+
+		if target.IsGHCR {
+			fmt.Printf("\n------------------- 正在维护 [%s] 分类的历史航次配额 (%s) -------------------\n", category, target.DisplayName)
+			if target.Password != "" {
+				ghClient := github.NewClient(target.Repository, target.Password)
+				if cfg.RetentionCount > 0 {
+					_ = ghClient.PruneCategoryVersions(category, cfg.RetentionCount)
+				}
+				fmt.Println("-> 正在顺带扫描并清理远端未打标孤立版本 (Untagged Versions)...")
+				deletedUntagged, errUntagged := ghClient.PruneUntaggedVersions()
+				if errUntagged != nil {
+					fmt.Printf("   [-] 清理远端未打标版本提示: %v\n", errUntagged)
+				} else if deletedUntagged > 0 {
+					fmt.Printf("   ✓ 顺带成功清理了 %d 个远端孤立 untagged 版本！\n", deletedUntagged)
+				} else {
+					fmt.Println("   ✓ 远端未发现任何孤立 untagged 版本，状态清洁。")
+				}
+			} else {
+				fmt.Println("未提供通行凭据，跳过远端航次轮转与 untagged 清理维护。")
+			}
+		} else {
+			parts := strings.Split(target.Repository, "/")
+			regHost := target.Repository
+			if len(parts) > 0 {
+				regHost = parts[0]
+			}
+			fmt.Printf("\n------------------- 通用 OCI 注册表配额管理 (%s) -------------------\n", regHost)
+			fmt.Printf("✓ 航次已成功推送至 %s (%s)\n", target.DisplayName, target.Repository)
+			if precision == "fixed" {
+				fmt.Printf("✓ 当前采用固定 Tag 覆盖模式 (%s)，已自动覆写上一航次，远端仓库始终保持最新单版本。\n", tag)
+			} else {
+				fmt.Println("💡 提示: 针对阿里云 ACR 个人版等无生命周期自动清理的环境，可使用固定 Tag 覆盖模式 (如 ark board --latest 或配置 ARK_TAG=latest) 实现自动覆写，免手动清理。")
+			}
+		}
 	}
 
-	fullTag := fmt.Sprintf("%s:%s", cfg.Repository, tag)
+	if cleanAll {
+		fmt.Println("\n------------------- 正在执行全量环境重置 (--clean-all) -------------------")
+		runClean([]string{"--all"})
+	} else if shouldClean {
+		cleanOrphanCacheFiles(cacheDir, sources)
+	}
+
+	fmt.Println("\n================================================================")
+	if len(targets) > 1 {
+		fmt.Printf("          ⚓ 双推异地多活交付全部圆满完成 (已同步交付 %d 个云端港口)            \n", len(targets))
+	} else {
+		fmt.Println("          ⚓ 登船航次全流程圆满完成 (Ark Voyage Ready)            ")
+	}
+	fmt.Println("================================================================")
+}
+
+// pushSingleTarget 独立交付单个目标注册表
+func pushSingleTarget(
+	ctx context.Context,
+	target RegistryTarget,
+	tag string,
+	tarLayers []*oci.TarLayer,
+	cfgDigestAMD string, cfgBytesAMD []byte,
+	cfgDigestARM string, cfgBytesARM []byte,
+	mfDigestAMD string, mfBytesAMD []byte,
+	mfDigestARM string, mfBytesARM []byte,
+	indexBytes []byte,
+	retryCount int,
+	cliEngine string,
+	tmpDir, cacheDir string,
+	layerFiles []string,
+	shouldClean, cleanAll bool,
+) error {
+	fullTag := fmt.Sprintf("%s:%s", target.Repository, tag)
+	parts := strings.Split(target.Repository, "/")
+	regHost := "ghcr.io"
+	if len(parts) >= 1 && parts[0] != "" {
+		regHost = parts[0]
+	}
 
 	if cliEngine == "oci" {
-		if token == "" {
-			fmt.Fprintf(os.Stderr, "[-] 未检测到港口通行凭据。如需启航直推，请在 .env 中配置 GH_TOKEN 或运行 gh auth login。\n")
-			os.Exit(1)
+		if target.Password == "" {
+			return fmt.Errorf("未检测到通行凭据，请在 .env 中配置对应目标凭据 (如 GH_TOKEN 或 ALIYUN_PASSWORD)")
 		}
 
-		fmt.Printf("\n==> 正在连接港口 %s (用户: %s)...\n", regHost, regUser)
-		ociClient, err := oci.NewClient(cfg.Repository, regUser, token)
+		fmt.Printf("\n==> 正在连接港口 %s (用户: %s, 目标: %s)...\n", regHost, target.Username, target.DisplayName)
+		ociClient, err := oci.NewClient(target.Repository, target.Username, target.Password)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 初始化 OCI 客户端失败: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("初始化 OCI 客户端失败: %w", err)
 		}
 
-		ctx := context.Background()
 		fmt.Println("==> 启用 Zero-Docker Pipeline 极速直推: 内存流式单通道直推，本地额外磁盘 0 字节，0 无效 CPU 压缩！")
 
 		for idx, tl := range tarLayers {
@@ -499,131 +618,76 @@ func runBoard(args []string, dryRun bool) {
 			}
 
 			if pushErr != nil {
-				fmt.Fprintf(os.Stderr, "[-] 货舱 [%s] 直推失败: %v\n", tl.FileName, pushErr)
-				os.Exit(1)
+				return fmt.Errorf("货舱 [%s] 直推失败: %w", tl.FileName, pushErr)
 			}
 		}
 
 		fmt.Println("-> 正在提交双架构班轮构型 (AMD64 & ARM64 Config JSON)...")
 		if err := ociClient.UploadBlobBytes(ctx, cfgDigestAMD, cfgBytesAMD); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 提交 AMD64 Config 失败: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("提交 AMD64 Config 失败: %w", err)
 		}
 		if err := ociClient.UploadBlobBytes(ctx, cfgDigestARM, cfgBytesARM); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 提交 ARM64 Config 失败: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("提交 ARM64 Config 失败: %w", err)
 		}
 
 		tagAMD := fmt.Sprintf("%s-amd64", tag)
 		tagARM := fmt.Sprintf("%s-arm64", tag)
 		fmt.Println("-> 正在提交并打标多架构平台清单 (AMD64 & ARM64)...")
-		// 先提交子平台并赋予显式 tag (消除 GitHub Packages 网页端 untagged 悬空显示)
 		if err := ociClient.PutManifest(ctx, mfDigestAMD, mfBytesAMD, oci.MediaTypeDockerManifestV2); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 提交 AMD64 Manifest 失败: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("提交 AMD64 Manifest 失败: %w", err)
 		}
 		if err := ociClient.PutManifest(ctx, tagAMD, mfBytesAMD, oci.MediaTypeDockerManifestV2); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 打标 AMD64 Manifest (%s) 失败: %v\n", tagAMD, err)
-			os.Exit(1)
+			return fmt.Errorf("打标 AMD64 Manifest (%s) 失败: %w", tagAMD, err)
 		}
 
 		if err := ociClient.PutManifest(ctx, mfDigestARM, mfBytesARM, oci.MediaTypeDockerManifestV2); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 提交 ARM64 Manifest 失败: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("提交 ARM64 Manifest 失败: %w", err)
 		}
 		if err := ociClient.PutManifest(ctx, tagARM, mfBytesARM, oci.MediaTypeDockerManifestV2); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 打标 ARM64 Manifest (%s) 失败: %v\n", tagARM, err)
-			os.Exit(1)
+			return fmt.Errorf("打标 ARM64 Manifest (%s) 失败: %w", tagARM, err)
 		}
 
 		fmt.Printf("-> 正在绑定多架构班轮总览标签 (ManifestList PUT): %s...\n", fullTag)
 		if err := ociClient.PutManifest(ctx, tag, indexBytes, oci.MediaTypeDockerManifestList); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 提交多架构 ManifestList 失败: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("提交多架构 ManifestList 失败: %w", err)
 		}
 		fmt.Printf("✓ 航次交付登船成功 (双架构 linux/amd64 + linux/arm64 显式打标: %s, %s, %s)！\n", tag, tagAMD, tagARM)
-	} else {
-		// Docker CLI 备选引擎链路
-		if token != "" {
-			fmt.Printf("正在校验港口通行证 %s (用户: %s)...\n", regHost, regUser)
-			_ = docker.Login(regHost, regUser, token)
-		} else {
-			fmt.Println("[!] 提示: 未检测到通行凭据。如需启航，请在 .env 中配置 GH_TOKEN。")
-		}
+		return nil
+	}
 
-		dockerfilePath := filepath.Join(tmpDir, "Dockerfile")
-		_ = docker.GenerateDockerfile(dockerfilePath, layerFiles)
-		defer os.Remove(dockerfilePath)
+	// Docker CLI 备选引擎链路
+	if target.Password != "" {
+		fmt.Printf("正在校验港口通行证 %s (用户: %s)...\n", regHost, target.Username)
+		_ = docker.Login(regHost, target.Username, target.Password)
+	}
 
-		pushedDirectly := false
-		fmt.Println("\n==> 正在使用 BuildKit 进行班轮集装箱独立分层快照构建与交付...")
-		if token != "" {
-			fmt.Println("==> 启用流式直推模式 (Direct Push): 免本地镜像落盘，分层直推远端...")
-			if err := docker.BuildWithDirectPush(dockerfilePath, cacheDir, fullTag); err == nil {
-				fmt.Println("✓ 班轮快照流式直推交付成功 (本地 0 磁盘镜像占用)！")
-				pushedDirectly = true
-			} else {
-				fmt.Printf("[!] 提示: 流式直推降级为本地构建推送: %v\n", err)
-			}
-		}
+	dockerfilePath := filepath.Join(tmpDir, fmt.Sprintf("Dockerfile_%s", target.Key))
+	_ = docker.GenerateDockerfile(dockerfilePath, layerFiles)
+	defer os.Remove(dockerfilePath)
 
-		if !pushedDirectly {
-			if err := docker.Build(dockerfilePath, cacheDir, fullTag); err != nil {
-				fmt.Fprintf(os.Stderr, "[-] Docker 构建失败: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Println("✓ 班轮快照封装成功！")
-
-			fmt.Printf("\n==> 班轮正在出港登船: %s...\n", fullTag)
-			fmt.Println("【免复传机制】：封条未变动的集装箱将显示 'Layer already exists'，0 流量瞬间交付！")
-
-			if err := docker.PushWithRetry(fullTag, retryCount, 3*time.Second); err != nil {
-				fmt.Fprintf(os.Stderr, "[-] 航次推送失败 (已尝试 %d 次): %v\n", retryCount, err)
-				os.Exit(1)
-			}
-			fmt.Println("✓ 航次交付登船成功！")
-		}
-
-		if shouldClean && !cleanAll {
-			if !pushedDirectly {
-				fmt.Printf("-> 正在移除本地快照镜像: %s...\n", fullTag)
-				_ = docker.RemoveImage(fullTag)
-			}
-			fmt.Println("-> 正在深度清理 Docker 悬空镜像与 BuildKit 构建缓存...")
-			_ = docker.PruneDanglingImages()
-			_ = docker.PruneBuildCache()
+	pushedDirectly := false
+	fmt.Printf("\n==> 正在使用 BuildKit 构建交付至: %s...\n", fullTag)
+	if target.Password != "" {
+		if err := docker.BuildWithDirectPush(dockerfilePath, cacheDir, fullTag); err == nil {
+			fmt.Println("✓ 班轮快照流式直推交付成功！")
+			pushedDirectly = true
 		}
 	}
 
-	fmt.Printf("\n------------------- 正在维护 [%s] 分类的历史航次配额 -------------------\n", category)
-	if token != "" {
-		ghClient := github.NewClient(cfg.Repository, token)
-		if cfg.RetentionCount > 0 {
-			_ = ghClient.PruneCategoryVersions(category, cfg.RetentionCount)
+	if !pushedDirectly {
+		if err := docker.Build(dockerfilePath, cacheDir, fullTag); err != nil {
+			return fmt.Errorf("Docker 构建失败: %w", err)
 		}
-		fmt.Println("-> 正在顺带扫描并清理远端未打标孤立版本 (Untagged Versions)...")
-		deletedUntagged, errUntagged := ghClient.PruneUntaggedVersions()
-		if errUntagged != nil {
-			fmt.Printf("   [-] 清理远端未打标版本提示: %v\n", errUntagged)
-		} else if deletedUntagged > 0 {
-			fmt.Printf("   ✓ 顺带成功清理了 %d 个远端孤立 untagged 版本！\n", deletedUntagged)
-		} else {
-			fmt.Println("   ✓ 远端未发现任何孤立 untagged 版本，状态清洁。")
+		if err := docker.PushWithRetry(fullTag, retryCount, 3*time.Second); err != nil {
+			return fmt.Errorf("航次推送失败: %w", err)
 		}
-	} else {
-		fmt.Println("未提供通行凭据，跳过远端航次轮转与 untagged 清理维护。")
+		fmt.Println("✓ 航次交付登船成功！")
 	}
 
-	if cleanAll {
-		fmt.Println("\n------------------- 正在执行全量环境重置 (--clean-all) -------------------")
-		runClean([]string{"--all"})
-	} else if shouldClean {
-		cleanOrphanCacheFiles(cacheDir, sources)
+	if shouldClean && !cleanAll && !pushedDirectly {
+		_ = docker.RemoveImage(fullTag)
 	}
-
-	fmt.Println("\n================================================================")
-	fmt.Println("          ⚓ 登船航次全流程圆满完成 (Ark Voyage Ready)            ")
-	fmt.Println("================================================================")
+	return nil
 }
 
 func formatBytes(b int64) string {

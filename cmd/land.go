@@ -18,6 +18,7 @@ import (
 func runLand(args []string) {
 	cleanedArgs, cliEngine := extractEngineFlag(args)
 	cleanedArgs, cliKey := extractKeyFlag(cleanedArgs)
+	cleanedArgs, cliTarget := extractTargetFlag(cleanedArgs)
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
 	cleanedArgs, cliDest := extractDestFlag(cleanedArgs)
 	args = cleanedArgs
@@ -26,19 +27,36 @@ func runLand(args []string) {
 	loadEnvFile(ws)
 	cfg, _, _ := LoadAppConfig(ws, cliRepo)
 
+	targets := resolveRegistryTargets(ws, cliTarget, cliRepo, cfg.Repository)
+	if len(targets) == 0 {
+		fmt.Fprintf(os.Stderr, "[-] 靠岸失败，未能识别到有效的目标港位\n")
+		os.Exit(1)
+	}
+	activeTarget := targets[0]
+	cfg.Repository = activeTarget.Repository
+
 	category := cfg.Category
 	var tag string
 	destDir := ""
 
+	for _, arg := range args {
+		if arg == "--latest" || arg == "-l" || arg == "--fixed" {
+			tag = "latest"
+			break
+		}
+	}
+
 	if len(args) > 0 {
 		param := args[0]
-		// 支持直接输入完整镜像名+标签 (例如 ghcr.io/org/repo:category-20260912-120000)
+		// 支持直接输入完整镜像名+标签 (例如 ghcr.io/org/repo:category-20260912-120000 或 :latest)
 		if strings.Contains(param, ":") {
 			parts := strings.SplitN(param, ":", 2)
 			cfg.Repository = parts[0]
 			param = parts[1]
 		}
-		if strings.Contains(param, "-") && len(strings.Split(param, "-")) >= 3 {
+		if strings.EqualFold(param, "latest") || strings.EqualFold(param, "fixed") {
+			tag = "latest"
+		} else if strings.Contains(param, "-") && len(strings.Split(param, "-")) >= 3 {
 			tag = param
 			category = strings.SplitN(param, "-", 2)[0]
 		} else if strings.Contains(param, "/") || strings.Contains(param, "\\") {
@@ -46,28 +64,38 @@ func runLand(args []string) {
 			if cliDest == "" {
 				cliDest = param
 			}
-		} else {
+		} else if !strings.HasPrefix(param, "-") {
 			category = param
 		}
 	}
 
-	token := loadToken(ws)
+	token := activeTarget.Password
+	if token == "" {
+		token = loadToken(ws)
+	}
 
-	// 取消固定 latest 标签：未显式指定具体时间戳航次时，自动通过 API 检索该分类下最新航次
+	if tag == "" && cfg.FixedTag != "" {
+		tag = cfg.FixedTag
+		fmt.Printf("[航次] 匹配配置中固定航次标签: %s\n", tag)
+	}
+
+	// 若未显式指定具体时间戳航次时：
 	if tag == "" {
-		if token != "" {
+		if activeTarget.IsGHCR && token != "" {
 			fmt.Printf("[航次] 正在查询分类 [%s] 在远端港口的最新航次...\n", category)
 			ghClient := github.NewClient(cfg.Repository, token)
 			if latestTag, err := ghClient.GetLatestTag(category); err == nil {
 				tag = latestTag
 				fmt.Printf("[航次] 自动定位最新航次: %s\n", tag)
 			} else {
-				fmt.Fprintf(os.Stderr, "[-] 自动检索最新航次失败: %v\n请通过 'ark land <具体航次标签>' 指定航次\n", err)
-				os.Exit(1)
+				// GitHub 检索分类标签失败时，尝试 fallback 到 latest
+				tag = "latest"
+				fmt.Printf("[航次] 自动检索历史航次失败，尝试调取固定最新标签: %s\n", tag)
 			}
 		} else {
-			fmt.Fprintf(os.Stderr, "[-] 未配置 GitHub Token 且未指定具体航次标签。\n请使用 'ark land %s-<日期标签>' 指定具体航次，或配置 GH_TOKEN。\n", category)
-			os.Exit(1)
+			// 非 GHCR 港口 (如阿里云 ACR) 或未配置 GH_TOKEN 时，默认调取固定 latest 标签
+			tag = "latest"
+			fmt.Printf("[航次] 未指定具体时间戳航次，默认调取固定最新标签: %s\n", tag)
 		}
 	}
 
@@ -111,12 +139,7 @@ func runLand(args []string) {
 
 	extracted := false
 	if cliEngine == "oci" {
-		parts := strings.Split(cfg.Repository, "/")
-		regUser := "duorameng"
-		if len(parts) >= 2 {
-			regUser = parts[1]
-		}
-
+		regUser := resolveRegistryUser(cfg.Repository)
 		ociClient, err := oci.NewClient(cfg.Repository, regUser, token)
 		if err == nil {
 			ctx := context.Background()
