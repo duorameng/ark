@@ -276,3 +276,37 @@ func resolveRepository(cfgRepo, cliRepo string) string {
 	}
 	return "ghcr.io/duorameng/ark"
 }
+
+// extractEngineFlag 从命令行参数中提取 --engine 或 -e 参数 (默认 oci)
+func extractEngineFlag(args []string) ([]string, string) {
+	var cleaned []string
+	engine := ""
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--engine" || arg == "-e" {
+			if i+1 < len(args) {
+				engine = strings.ToLower(args[i+1])
+				i++
+				continue
+			}
+		} else if strings.HasPrefix(arg, "--engine=") {
+			engine = strings.ToLower(strings.TrimPrefix(arg, "--engine="))
+			continue
+		} else if strings.HasPrefix(arg, "-e=") {
+			engine = strings.ToLower(strings.TrimPrefix(arg, "-e="))
+			continue
+		}
+		cleaned = append(cleaned, arg)
+	}
+
+	if engine == "" {
+		engine = strings.ToLower(strings.TrimSpace(os.Getenv("ARK_ENGINE")))
+	}
+	if engine == "" {
+		engine = "oci"
+	}
+
+	return cleaned, engine
+}
+

@@ -167,3 +167,13 @@ func PruneBuildCache() error {
 	return cmd.Run()
 }
 
+// IsDaemonRunning 检测本地 Docker CLI 是否存在且守护进程正在运行
+func IsDaemonRunning() bool {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return false
+	}
+	cmd := exec.Command("docker", "version")
+	return cmd.Run() == nil
+}
+
+

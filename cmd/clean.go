@@ -81,36 +81,40 @@ func runClean(args []string) {
 	}
 
 	// 4. 清理 Docker 悬空镜像与 BuildKit 构建缓存
-	fmt.Println("\n-> 正在清理 Docker 悬空镜像与 BuildKit 构建缓存...")
-	if err := docker.PruneDanglingImages(); err == nil {
-		fmt.Println("   ✓ 已清理 Docker 悬空镜像 (<none>:<none>)")
+	dockerActive := docker.IsDaemonRunning()
+	if dockerActive {
+		fmt.Println("\n-> 正在清理 Docker 悬空镜像与 BuildKit 构建缓存...")
+		if err := docker.PruneDanglingImages(); err == nil {
+			fmt.Println("   ✓ 已清理 Docker 悬空镜像 (<none>:<none>)")
+		}
+		if err := docker.PruneBuildCache(); err == nil {
+			fmt.Println("   ✓ 已深度释放 Docker BuildKit 编译构建缓存")
+		}
 	} else {
-		fmt.Printf("   [!] 提示: 跳过 Docker 悬空镜像清理: %v\n", err)
-	}
-
-	if err := docker.PruneBuildCache(); err == nil {
-		fmt.Println("   ✓ 已深度释放 Docker BuildKit 编译构建缓存")
-	} else {
-		fmt.Printf("   [!] 提示: 跳过 Docker BuildKit 缓存清理: %v\n", err)
+		fmt.Println("\n✓ [容器环境] 本地未运行 Docker 守护进程 (Zero-Docker 原生模式，0 容器垃圾残留)")
 	}
 
 	// 5. 如果指定了 --docker 或 --all，清理本地的仓库镜像
 	if includeDockerImages {
-		configPath := filepath.Join(ws, "config.json")
-		if cfg, err := config.Load(configPath); err == nil && cfg.Repository != "" {
-			fmt.Printf("-> 正在检索并清理本地关联镜像: %s...\n", cfg.Repository)
-			out, err := exec.Command("docker", "images", "--filter=reference="+cfg.Repository+"*", "-q").Output()
-			if err == nil && len(out) > 0 {
-				ids := strings.Fields(string(out))
-				cleanedImgCount := 0
-				for _, id := range ids {
-					if err := docker.RemoveImage(id); err == nil {
-						cleanedImgCount++
+		if !dockerActive {
+			fmt.Println("   [!] 提示: 本地未运行 Docker 守护进程，跳过指定镜像清理。")
+		} else {
+			configPath := filepath.Join(ws, "config.json")
+			if cfg, err := config.Load(configPath); err == nil && cfg.Repository != "" {
+				fmt.Printf("-> 正在检索并清理本地关联镜像: %s...\n", cfg.Repository)
+				out, err := exec.Command("docker", "images", "--filter=reference="+cfg.Repository+"*", "-q").Output()
+				if err == nil && len(out) > 0 {
+					ids := strings.Fields(string(out))
+					cleanedImgCount := 0
+					for _, id := range ids {
+						if err := docker.RemoveImage(id); err == nil {
+							cleanedImgCount++
+						}
 					}
+					fmt.Printf("   ✓ 已删除 %d 个本地相关 Docker 镜像\n", cleanedImgCount)
+				} else {
+					fmt.Println("   ✓ 本地无残留的相关 Docker 镜像")
 				}
-				fmt.Printf("   ✓ 已删除 %d 个本地相关 Docker 镜像\n", cleanedImgCount)
-			} else {
-				fmt.Println("   ✓ 本地无残留的相关 Docker 镜像")
 			}
 		}
 	}

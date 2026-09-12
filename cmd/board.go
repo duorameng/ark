@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"ark/pkg/docker"
 	"ark/pkg/github"
 	"ark/pkg/hash"
+	"ark/pkg/oci"
 	"ark/pkg/timezone"
 )
 
@@ -167,7 +169,8 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 }
 
 func runBoard(args []string, dryRun bool) {
-	cleanedArgs, cliKey := extractKeyFlag(args)
+	cleanedArgs, cliEngine := extractEngineFlag(args)
+	cleanedArgs, cliKey := extractKeyFlag(cleanedArgs)
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
 	args = cleanedArgs
 
@@ -190,14 +193,19 @@ func runBoard(args []string, dryRun bool) {
 	fmt.Printf("[航次] 目的港位: %s\n", cfg.Repository)
 	fmt.Printf("[场景] 所属分类: %s\n", category)
 	fmt.Printf("[航次] 班次编号: %s (时间精度: %s)\n", tag, precision)
+	engineDesc := "纯 Go 原生 OCI 极速直推 (Zero-Docker Pipeline, 0 额外落盘, 0 无效压缩)"
+	if cliEngine == "docker" {
+		engineDesc = "Docker BuildKit 构建流水线 (传统容器引擎)"
+	}
+	fmt.Printf("[引擎] 交付引擎: %s (%s)\n", strings.ToUpper(cliEngine), engineDesc)
 	fmt.Printf("[航次] 舱位配额: 该分类下保留最新 %d 个航次\n", cfg.RetentionCount)
 	fmt.Printf("[容灾] 推送重试配额: 失败自动重试 %d 次 (指数退避)\n", retryCount)
 	fmt.Printf("[安全] 货运封条: %v\n", cfg.Encrypt)
-	cleanModeStr := "释放本地镜像与构建缓存 (保留增量缓存)"
+	cleanModeStr := "释放本地构建临时数据 (保留增量缓存)"
 	if cleanAll {
 		cleanModeStr = "全量自动重置 (推送后彻底清空 cache/ 与临时文件，0 本地残留)"
 	} else if !shouldClean {
-		cleanModeStr = "保留本地镜像与构建缓存"
+		cleanModeStr = "保留本地缓存与临时文件"
 	}
 	fmt.Printf("[存储] 产物清理: %s\n", cleanModeStr)
 
@@ -206,7 +214,7 @@ func runBoard(args []string, dryRun bool) {
 	_ = os.MkdirAll(cacheDir, 0755)
 	_ = os.MkdirAll(tmpDir, 0755)
 
-	if shouldClean {
+	if cliEngine == "docker" && shouldClean {
 		fmt.Println("-> 正在执行构建前磁盘预清理 (自动释放历史中断或旧版本悬空层与构建缓存)...")
 		_ = docker.PruneDanglingImages()
 		_ = docker.PruneBuildCache()
@@ -233,6 +241,7 @@ func runBoard(args []string, dryRun bool) {
 	fmt.Println("\n------------------- 正在清点各货舱集装箱 (按变动频率排序) -------------------")
 
 	layerFiles := make([]string, 0, len(sources))
+	tarLayers := make([]*oci.TarLayer, 0, len(sources))
 	newManifest := make(map[string]ManifestEntry)
 
 	for _, src := range sources {
@@ -285,20 +294,29 @@ func runBoard(args []string, dryRun bool) {
 			}
 
 			fi, _ := os.Stat(layerFile)
-			sizeStr := fmt.Sprintf("%d KB", fi.Size()/1024)
-			if fi.Size() > 1024*1024 {
-				sizeStr = fmt.Sprintf("%.1f MB", float64(fi.Size())/1024/1024)
-			}
-			fmt.Printf("   装箱完毕: %s (%s, 压缩加封)\n", filepath.Base(layerFile), sizeStr)
+			fmt.Printf("   装箱完毕: %s (%s, 压缩加封)\n", filepath.Base(layerFile), formatBytes(fi.Size()))
+		}
+
+		tl, err := oci.NewTarLayer(layerFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 封装 OCI 单层 Tar 失败: %v\n", err)
+			os.Exit(1)
+		}
+		layerDigest, err := tl.ComputeDigest()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 计算 OCI 分层哈希失败: %v\n", err)
+			os.Exit(1)
 		}
 
 		layerFiles = append(layerFiles, layerFile)
+		tarLayers = append(tarLayers, tl)
 		newManifest[src.ID] = ManifestEntry{
-			Name:      src.Name,
-			Path:      srcPath,
-			TreeHash:  dirInfo.Hash,
-			LayerFile: filepath.Base(layerFile),
-			UpdatedAt: timezone.FormatDefault(timezone.Now()),
+			Name:        src.Name,
+			Path:        srcPath,
+			TreeHash:    dirInfo.Hash,
+			LayerFile:   filepath.Base(layerFile),
+			LayerSHA256: layerDigest,
+			UpdatedAt:   timezone.FormatDefault(timezone.Now()),
 		}
 	}
 
@@ -306,21 +324,89 @@ func runBoard(args []string, dryRun bool) {
 		_ = os.WriteFile(manifestPath, mData, 0644)
 	}
 
-	// 在 cacheDir 中维护专属 .dockerignore，避免 Docker daemon 扫描传输无关上下文
-	dockerignorePath := filepath.Join(cacheDir, ".dockerignore")
-	_ = os.WriteFile(dockerignorePath, []byte("*\n!*.dat\n!*.tar.gz\n!*.tar\n!*.enc\n"), 0644)
-
-	dockerfilePath := filepath.Join(tmpDir, "Dockerfile")
-	if err := docker.GenerateDockerfile(dockerfilePath, layerFiles); err != nil {
-		fmt.Fprintf(os.Stderr, "[-] 生成 Dockerfile 失败: %v\n", err)
+	// 生成双架构 (linux/amd64 + linux/arm64) 构型信息
+	cfgBytesAMD, cfgDigestAMD, cfgSizeAMD, err := oci.GenerateArchConfigJSON("amd64", tarLayers)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[-] 生成 AMD64 Config 失败: %v\n", err)
 		os.Exit(1)
 	}
-	defer os.Remove(dockerfilePath)
+	mfBytesAMD, mfDigestAMD, mfSizeAMD, err := oci.GenerateManifestJSON(cfgDigestAMD, cfgSizeAMD, tarLayers, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[-] 生成 AMD64 Manifest 失败: %v\n", err)
+		os.Exit(1)
+	}
 
-	dfContent, _ := os.ReadFile(dockerfilePath)
-	fmt.Println("\n------------------- 装载构型 (Dockerfile) -------------------")
-	fmt.Println(string(dfContent))
-	fmt.Println("-------------------------------------------------------------")
+	cfgBytesARM, cfgDigestARM, cfgSizeARM, err := oci.GenerateArchConfigJSON("arm64", tarLayers)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[-] 生成 ARM64 Config 失败: %v\n", err)
+		os.Exit(1)
+	}
+	mfBytesARM, mfDigestARM, mfSizeARM, err := oci.GenerateManifestJSON(cfgDigestARM, cfgSizeARM, tarLayers, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[-] 生成 ARM64 Manifest 失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	manifestDescriptors := []oci.ManifestDescriptor{
+		{
+			MediaType: oci.MediaTypeDockerManifestV2,
+			Size:      mfSizeAMD,
+			Digest:    mfDigestAMD,
+			Platform: oci.Platform{
+				Architecture: "amd64",
+				OS:           "linux",
+			},
+		},
+		{
+			MediaType: oci.MediaTypeDockerManifestV2,
+			Size:      mfSizeARM,
+			Digest:    mfDigestARM,
+			Platform: oci.Platform{
+				Architecture: "arm64",
+				OS:           "linux",
+			},
+		},
+	}
+	indexBytes, indexDigest, indexSize, err := oci.GenerateMultiArchIndex(manifestDescriptors, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[-] 生成多架构索引失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	if cliEngine == "oci" {
+		fmt.Println("\n------------------- 装载构型 (Zero-Docker Multi-Arch OCI Index) -------------------")
+		fmt.Printf("平台原生支持:  linux/amd64 + linux/arm64 (双架构免编译直通，0 架构警告)\n")
+		fmt.Printf("货舱分层:      %d 个独立集装箱 Layer (双架构共享总载重: %s)\n", len(tarLayers), func() string {
+			var tot int64
+			for _, l := range tarLayers {
+				tot += l.TotalSize
+			}
+			return formatBytes(tot)
+		}())
+		for idx, tl := range tarLayers {
+			fmt.Printf("  [%02d] %s (%s, 路径: /%s)\n", idx+1, tl.Digest[:19]+"...", formatBytes(tl.TotalSize), tl.TargetCargo)
+		}
+		fmt.Printf("AMD64 清单:    %s (%d 字节)\n", mfDigestAMD, mfSizeAMD)
+		fmt.Printf("ARM64 清单:    %s (%d 字节)\n", mfDigestARM, mfSizeARM)
+		fmt.Printf("多架构索引:    %s (%d 字节)\n", indexDigest, indexSize)
+		fmt.Println("----------------------------------------------------------------------------------")
+	} else {
+		// 在 cacheDir 中维护专属 .dockerignore，避免 Docker daemon 扫描传输无关上下文
+		dockerignorePath := filepath.Join(cacheDir, ".dockerignore")
+		_ = os.WriteFile(dockerignorePath, []byte("*\n!*.dat\n!*.tar.gz\n!*.tar\n!*.enc\n"), 0644)
+
+		dockerfilePath := filepath.Join(tmpDir, "Dockerfile")
+		if err := docker.GenerateDockerfile(dockerfilePath, layerFiles); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 生成 Dockerfile 失败: %v\n", err)
+			os.Exit(1)
+		}
+		defer os.Remove(dockerfilePath)
+
+		dfContent, _ := os.ReadFile(dockerfilePath)
+		fmt.Println("\n------------------- 装载构型 (Dockerfile) -------------------")
+		fmt.Println(string(dfContent))
+		fmt.Println("-------------------------------------------------------------")
+	}
 
 	if dryRun {
 		fmt.Println("[DRY RUN] 模拟登船完毕，跳过实际航行与推送。")
@@ -336,43 +422,153 @@ func runBoard(args []string, dryRun bool) {
 		regUser = parts[1]
 	}
 
-	if token != "" {
-		fmt.Printf("正在校验港口通行证 %s (用户: %s)...\n", regHost, regUser)
-		_ = docker.Login(regHost, regUser, token)
-	} else {
-		fmt.Println("[!] 提示: 未检测到通行凭据。如需启航，请在 .env 中配置 GH_TOKEN。")
-	}
-
 	fullTag := fmt.Sprintf("%s:%s", cfg.Repository, tag)
-	pushedDirectly := false
 
-	fmt.Println("\n==> 正在使用 BuildKit 进行班轮集装箱独立分层快照构建与交付...")
-	// 优先尝试 Direct Push (分层构建完成立即推流到远程 Registry，跳过本地导出，本地镜像磁盘占用 0 字节！)
-	if token != "" {
-		fmt.Println("==> 启用流式直推模式 (Direct Push): 免本地镜像落盘，分层直推远端...")
-		if err := docker.BuildWithDirectPush(dockerfilePath, cacheDir, fullTag); err == nil {
-			fmt.Println("✓ 班轮快照流式直推交付成功 (本地 0 磁盘镜像占用)！")
-			pushedDirectly = true
+	if cliEngine == "oci" {
+		if token == "" {
+			fmt.Fprintf(os.Stderr, "[-] 未检测到港口通行凭据。如需启航直推，请在 .env 中配置 GH_TOKEN 或运行 gh auth login。\n")
+			os.Exit(1)
+		}
+
+		fmt.Printf("\n==> 正在连接港口 %s (用户: %s)...\n", regHost, regUser)
+		ociClient, err := oci.NewClient(cfg.Repository, regUser, token)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 初始化 OCI 客户端失败: %v\n", err)
+			os.Exit(1)
+		}
+
+		ctx := context.Background()
+		fmt.Println("==> 启用 Zero-Docker Pipeline 极速直推: 内存流式单通道直推，本地额外磁盘 0 字节，0 无效 CPU 压缩！")
+
+		for idx, tl := range tarLayers {
+			fmt.Printf("-> 正在探测货舱分层 [%d/%d]: %s (%s)...\n", idx+1, len(tarLayers), tl.FileName, formatBytes(tl.TotalSize))
+			exists, err := ociClient.CheckBlobExists(ctx, tl.Digest)
+			if err == nil && exists {
+				fmt.Printf("   [远端已就绪 ✓] 0 流量秒传 (指纹: %s...)\n", tl.Digest[:19])
+				continue
+			}
+
+			fmt.Printf("   [正在直推 ⚡] 建立内存流式通道，直传远端注册表...\n")
+			var pushErr error
+			startTime := time.Now()
+			for attempt := 1; attempt <= retryCount; attempt++ {
+				stream, cleanup, sErr := tl.OpenStream()
+				if sErr != nil {
+					pushErr = sErr
+					break
+				}
+
+				var lastReport time.Time
+				pushErr = ociClient.UploadBlobStream(ctx, tl.Digest, tl.TotalSize, stream, func(written int64) {
+					now := time.Now()
+					if now.Sub(lastReport) >= 300*time.Millisecond || written == tl.TotalSize {
+						lastReport = now
+						elapsed := now.Sub(startTime).Seconds()
+						speedMB := 0.0
+						if elapsed > 0 {
+							speedMB = float64(written) / 1024 / 1024 / elapsed
+						}
+						pct := float64(written) / float64(tl.TotalSize) * 100
+						fmt.Printf("\r   -> 已直传: %s / %s (%.1f%%) - %.1f MB/s   ",
+							formatBytes(written), formatBytes(tl.TotalSize), pct, speedMB)
+					}
+				})
+				cleanup()
+
+				if pushErr == nil {
+					fmt.Printf("\n   ✓ 货舱 [%s] 直推完成 (耗时: %v)！\n", tl.FileName, time.Since(startTime).Round(time.Millisecond))
+					break
+				}
+
+				if attempt < retryCount {
+					fmt.Printf("\n   [!] 提示: 直推遇到网络波动 (%v)，正在进行第 %d/%d 次重试...\n", pushErr, attempt+1, retryCount)
+					time.Sleep(2 * time.Second)
+				}
+			}
+
+			if pushErr != nil {
+				fmt.Fprintf(os.Stderr, "[-] 货舱 [%s] 直推失败: %v\n", tl.FileName, pushErr)
+				os.Exit(1)
+			}
+		}
+
+		fmt.Println("-> 正在提交双架构班轮构型 (AMD64 & ARM64 Config JSON)...")
+		if err := ociClient.UploadBlobBytes(ctx, cfgDigestAMD, cfgBytesAMD); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 提交 AMD64 Config 失败: %v\n", err)
+			os.Exit(1)
+		}
+		if err := ociClient.UploadBlobBytes(ctx, cfgDigestARM, cfgBytesARM); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 提交 ARM64 Config 失败: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println("-> 正在提交平台 Manifest (AMD64 & ARM64)...")
+		if err := ociClient.PutManifest(ctx, mfDigestAMD, mfBytesAMD, oci.MediaTypeDockerManifestV2); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 提交 AMD64 Manifest 失败: %v\n", err)
+			os.Exit(1)
+		}
+		if err := ociClient.PutManifest(ctx, mfDigestARM, mfBytesARM, oci.MediaTypeDockerManifestV2); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 提交 ARM64 Manifest 失败: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("-> 正在绑定多架构航次标签 (ManifestList PUT): %s...\n", fullTag)
+		if err := ociClient.PutManifest(ctx, tag, indexBytes, oci.MediaTypeDockerManifestList); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 提交多架构 ManifestList 失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("✓ 航次交付登船成功 (Zero-Docker Pipeline 双架构 linux/amd64 + linux/arm64 原生就绪)！")
+	} else {
+		// Docker CLI 备选引擎链路
+		if token != "" {
+			fmt.Printf("正在校验港口通行证 %s (用户: %s)...\n", regHost, regUser)
+			_ = docker.Login(regHost, regUser, token)
 		} else {
-			fmt.Printf("[!] 提示: 流式直推降级为本地构建推送: %v\n", err)
+			fmt.Println("[!] 提示: 未检测到通行凭据。如需启航，请在 .env 中配置 GH_TOKEN。")
 		}
-	}
 
-	if !pushedDirectly {
-		if err := docker.Build(dockerfilePath, cacheDir, fullTag); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] Docker 构建失败: %v\n", err)
-			os.Exit(1)
+		dockerfilePath := filepath.Join(tmpDir, "Dockerfile")
+		_ = docker.GenerateDockerfile(dockerfilePath, layerFiles)
+		defer os.Remove(dockerfilePath)
+
+		pushedDirectly := false
+		fmt.Println("\n==> 正在使用 BuildKit 进行班轮集装箱独立分层快照构建与交付...")
+		if token != "" {
+			fmt.Println("==> 启用流式直推模式 (Direct Push): 免本地镜像落盘，分层直推远端...")
+			if err := docker.BuildWithDirectPush(dockerfilePath, cacheDir, fullTag); err == nil {
+				fmt.Println("✓ 班轮快照流式直推交付成功 (本地 0 磁盘镜像占用)！")
+				pushedDirectly = true
+			} else {
+				fmt.Printf("[!] 提示: 流式直推降级为本地构建推送: %v\n", err)
+			}
 		}
-		fmt.Println("✓ 班轮快照封装成功！")
 
-		fmt.Printf("\n==> 班轮正在出港登船: %s...\n", fullTag)
-		fmt.Println("【免复传机制】：封条未变动的集装箱将显示 'Layer already exists'，0 流量瞬间交付！")
+		if !pushedDirectly {
+			if err := docker.Build(dockerfilePath, cacheDir, fullTag); err != nil {
+				fmt.Fprintf(os.Stderr, "[-] Docker 构建失败: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("✓ 班轮快照封装成功！")
 
-		if err := docker.PushWithRetry(fullTag, retryCount, 3*time.Second); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 航次推送失败 (已尝试 %d 次): %v\n", retryCount, err)
-			os.Exit(1)
+			fmt.Printf("\n==> 班轮正在出港登船: %s...\n", fullTag)
+			fmt.Println("【免复传机制】：封条未变动的集装箱将显示 'Layer already exists'，0 流量瞬间交付！")
+
+			if err := docker.PushWithRetry(fullTag, retryCount, 3*time.Second); err != nil {
+				fmt.Fprintf(os.Stderr, "[-] 航次推送失败 (已尝试 %d 次): %v\n", retryCount, err)
+				os.Exit(1)
+			}
+			fmt.Println("✓ 航次交付登船成功！")
 		}
-		fmt.Println("✓ 航次交付登船成功！")
+
+		if shouldClean && !cleanAll {
+			if !pushedDirectly {
+				fmt.Printf("-> 正在移除本地快照镜像: %s...\n", fullTag)
+				_ = docker.RemoveImage(fullTag)
+			}
+			fmt.Println("-> 正在深度清理 Docker 悬空镜像与 BuildKit 构建缓存...")
+			_ = docker.PruneDanglingImages()
+			_ = docker.PruneBuildCache()
+		}
 	}
 
 	fmt.Printf("\n------------------- 正在维护 [%s] 分类的历史航次配额 -------------------\n", category)
@@ -387,27 +583,25 @@ func runBoard(args []string, dryRun bool) {
 		fmt.Println("\n------------------- 正在执行全量环境重置 (--clean-all) -------------------")
 		runClean([]string{"--docker"})
 	} else if shouldClean {
-		fmt.Println("\n------------------- 正在清理本地构建缓存与临时数据 -------------------")
-		if !pushedDirectly {
-			fmt.Printf("-> 正在移除本地快照镜像: %s...\n", fullTag)
-			if err := docker.RemoveImage(fullTag); err == nil {
-				fmt.Printf("   ✓ 已成功删除本地 Docker 镜像，释放磁盘空间: %s\n", fullTag)
-			} else {
-				fmt.Printf("   [!] 提示: 本地镜像处理完成: %v\n", err)
-			}
-		}
-
-		fmt.Println("-> 正在深度清理 Docker 悬空镜像与 BuildKit 构建缓存...")
-		_ = docker.PruneDanglingImages()
-		_ = docker.PruneBuildCache()
-		fmt.Println("   ✓ 本地 Docker 构建缓存与中间层清理完成！")
-
 		cleanOrphanCacheFiles(cacheDir, sources)
 	}
 
 	fmt.Println("\n================================================================")
 	fmt.Println("          ⚓ 登船航次全流程圆满完成 (Ark Voyage Ready)            ")
 	fmt.Println("================================================================")
+}
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 func cleanOrphanCacheFiles(cacheDir string, sources []config.Source) {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,10 +12,12 @@ import (
 	"ark/pkg/config"
 	"ark/pkg/docker"
 	"ark/pkg/github"
+	"ark/pkg/oci"
 )
 
 func runLand(args []string) {
-	cleanedArgs, cliKey := extractKeyFlag(args)
+	cleanedArgs, cliEngine := extractEngineFlag(args)
+	cleanedArgs, cliKey := extractKeyFlag(cleanedArgs)
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
 	args = cleanedArgs
 
@@ -49,9 +52,10 @@ func runLand(args []string) {
 		}
 	}
 
+	token := loadToken(ws)
+
 	// 取消固定 latest 标签：未显式指定具体时间戳航次时，自动通过 API 检索该分类下最新航次
 	if tag == "" {
-		token := loadToken(ws)
 		if token != "" {
 			fmt.Printf("[航次] 正在查询分类 [%s] 在远端港口的最新航次...\n", category)
 			ghClient := github.NewClient(cfg.Repository, token)
@@ -82,6 +86,11 @@ func runLand(args []string) {
 	fmt.Printf("[港位] 来源港位: %s\n", cfg.Repository)
 	fmt.Printf("[场景] 所属分类: %s\n", category)
 	fmt.Printf("[航次] 检索标签: %s\n", tag)
+	engineDesc := "纯 Go 原生 OCI 流式直取 (Zero-Docker Pipeline, 无需 Docker 引擎)"
+	if cliEngine == "docker" {
+		engineDesc = "Docker 引擎调取与导出"
+	}
+	fmt.Printf("[引擎] 调取引擎: %s (%s)\n", strings.ToUpper(cliEngine), engineDesc)
 	fmt.Printf("[卸货] 交付目的地: %s\n", destDir)
 	fmt.Printf("[安全] 封条状态: %v\n", cfg.Encrypt)
 
@@ -99,15 +108,51 @@ func runLand(args []string) {
 	_ = os.MkdirAll(tmpLandDir, 0755)
 	defer os.RemoveAll(tmpLandDir)
 
-	fmt.Printf("\n==> 正在靠岸进港，调取班轮快照 %s...\n", fullImage)
-	if err := docker.Pull(fullImage); err != nil {
-		fmt.Printf("[!] 提示: 远端调取未成功，尝试使用本地停泊快照: %v\n", err)
+	extracted := false
+	if cliEngine == "oci" {
+		parts := strings.Split(cfg.Repository, "/")
+		regUser := "duorameng"
+		if len(parts) >= 2 {
+			regUser = parts[1]
+		}
+
+		ociClient, err := oci.NewClient(cfg.Repository, regUser, token)
+		if err == nil {
+			ctx := context.Background()
+			fmt.Printf("\n==> 正在通过原生 OCI 协议调取班轮清单: %s...\n", fullImage)
+			mf, err := ociClient.GetManifest(ctx, tag)
+			if err == nil && mf != nil && len(mf.Layers) > 0 {
+				fmt.Printf("✓ 成功获取清单，包含 %d 个货舱集装箱分层，开始流式调取与提取...\n", len(mf.Layers))
+				allOk := true
+				for idx, l := range mf.Layers {
+					fmt.Printf("-> 正在流式提取货舱分层 [%d/%d] (指纹: %s...)\n", idx+1, len(mf.Layers), l.Digest[:19])
+					if err := ociClient.DownloadBlobAndExtractCargo(ctx, l.Digest, tmpLandDir, nil); err != nil {
+						fmt.Printf("   [-] 提取分层失败: %v\n", err)
+						allOk = false
+						break
+					}
+				}
+				if allOk {
+					extracted = true
+					fmt.Println("✓ 原生 OCI 集装箱卸载提取成功 (零 Docker 守护进程依赖)！")
+				}
+			} else {
+				fmt.Printf("[!] 提示: 原生 OCI 清单解析未完成 (%v)，尝试降级至 Docker 引擎...\n", err)
+			}
+		}
 	}
 
-	fmt.Println("==> 正在吊装卸载集装箱...")
-	if err := docker.ExtractCargoFromImage(fullImage, tmpLandDir); err != nil {
-		fmt.Fprintf(os.Stderr, "[-] 导出集装箱失败: %v\n", err)
-		os.Exit(1)
+	if !extracted {
+		fmt.Printf("\n==> 正在靠岸进港，使用 Docker 调取班轮快照 %s...\n", fullImage)
+		if err := docker.Pull(fullImage); err != nil {
+			fmt.Printf("[!] 提示: 远端调取未成功，尝试使用本地停泊快照: %v\n", err)
+		}
+
+		fmt.Println("==> 正在吊装卸载集装箱...")
+		if err := docker.ExtractCargoFromImage(fullImage, tmpLandDir); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 导出集装箱失败: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	fmt.Println("\n------------------- 正在开封集装箱并归位货物 -------------------")

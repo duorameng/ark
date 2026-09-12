@@ -10,35 +10,42 @@
    - 纯 Go 编写打包与加解密，免装 `tar`、`openssl`、`jq`、`curl`。
    - 编译为极简单一二进制文件（~6.3MB），跨平台即放即用。
 
-2. **数字 UID/GID 与文件权限严格保持 (Postgres 等服务无缝保障)**：
+2. **纯 Go 原生 OCI 直推引擎 (Zero-Docker Pipeline)**：
+   - 默认抛弃 Docker 守护进程，直接基于 OCI Distribution Spec v1.1 与 Docker Registry v2 协议。
+   - **内存单通道流式直推 (64KB Buffer)**：宿主机额外磁盘占用**严格为 0 字节**，完全杜绝 Docker BuildKit 对已加密 `.dat` 密文的无效二次 CPU 压缩。
+   - **性能飞跃**：消灭 Build Context 传输 (55s) 与二次压缩干烧 (140s)，耗时直接从近 4 分钟骤降至 20~30 秒（仅受限于上传带宽）。
+   - **双架构原生索引 (linux/amd64 + linux/arm64)**：自动生成标准 OCI Image Index (Manifest List)，双架构共享数据 Layer（0 额外存储，0 额外流量）；Apple Silicon Mac、树莓派、甲骨文 ARM VPS 或 Intel/AMD 主机运行 `docker pull` 原生匹配，0 架构警告。
+   - **双向平滑引擎选择**：默认启用 OCI 原生直推引擎，保留 `--engine=docker` 作为传统备选。
+
+3. **数字 UID/GID 与文件权限严格保持 (Postgres 等服务无缝保障)**：
    - 纯 Go 通过底层系统调用原生提取与还原数字 UID/GID。
    - 彻底避免传统 `--owner=0 --group=0` 破坏容器运行用户权限（如 PostgreSQL `70:0`）的问题，恢复即可直接正常启动运行。
 
-3. **全自动扫描探测与冷热变动率排序 (Smart Hot/Cold Sorting)**：
+4. **全自动扫描探测与冷热变动率排序 (Smart Hot/Cold Sorting)**：
    - 支持一键扫描指定父目录（`./ark 扫描 /root/workspace`），自动发现所有项目并评估变动频率（评分 10~90 分）。
    - **冷数据在前、热数据在后**：变动少的配置/静态数据排在基础镜像层，高频变动的数据排在顶部，最大化镜像层与本地 Tree Hash 缓存复用率。
 
-4. **秒级 Tree Hash 状态感知（封条未动 0 耗时）**：
+5. **秒级 Tree Hash 状态感知（封条未动 0 耗时）**：
    - 基于多 Goroutine 并发树形哈希算法，极速计算货舱指纹。
    - 无变动目录显示 `[封条完好 ✓]`，完全跳过打包与加密过程，秒级完成就绪。
 
-5. **班轮集装箱独立分层快照（BuildKit `COPY --link`）**：
-   - 采用 Docker BuildKit `# syntax=docker/dockerfile:1.4` 与 **`COPY --link`**。
-   - 每个舱位封装为完全独立的集装箱 Snapshot。未变动的舱位推送到 GHCR 时远端返回 `Layer already exists`，**0 流量出海，远端 0 额外存储开销**。
+6. **班轮集装箱独立分层快照与 0 流量秒传 (HEAD Dedup)**：
+   - 每个舱位封装为完全独立的集装箱 Snapshot Layer。
+   - 直推前通过 HEAD 请求探测远端 Registry，未变动的舱位显示 `[远端已就绪 ✓] 0 流量秒传`，不耗费任何上传带宽。
 
-6. **场景分类与日期精确版本控制 (Category + Timestamp Tags)**：
+7. **场景分类与日期精确版本控制 (Category + Timestamp Tags)**：
    - 航次标签严格规范为：`{分类}-{年月日-时分秒}`（例如 `vps-20260912-140000`），**不生成任何 latest 标签**，确保每一航次均有确切不可变的时间戳版本。
    - 同一个镜像仓库（`ghcr.io/duorameng/ark`）可并行容纳多个独立业务场景（如 `vps`、`nas`、`db`），互不覆盖干扰。
 
-7. **分类作用域历史轮转 (Category-Scoped Pruning)**：
+8. **分类作用域历史轮转 (Category-Scoped Pruning)**：
    - 自动轮转历史航次时，仅筛选匹配当前 `{分类}-*` 的航次进行保留数控制，绝不误触其他分类。
 
-8. **高强度密闭封条 (适配免费公开港口)**：
+9. **高强度密闭封条 (适配免费公开港口)**：
    - 默认启用与 OpenSSL 完全兼容的 AES-256-CBC + PBKDF2 (100,000 次哈希) 安全封条（`.dat` 密闭二进制块）。
    - 仓库完全公开，外界看到的也只是加密二进制块；享受 GitHub 公开包**永久免费、无限存储、无限流量**。
 
-9. **无需 Docker 的灾难独立解封 (Zero-Docker Restore)**：
-   - 支持 `./ark unpack`，在宿主机无 Docker 或网络故障的极端场景下，也能单二进制一键解密还原所有 `.dat` 货物。
+10. **全链路免 Docker 独立灾备闭环 (Zero-Docker Voyage & Restore)**：
+   - 登船（`ark board`）、下船（`ark land`）与就地解包（`ark unpack`）均支持 100% 独立脱离 Docker 守护进程运行，任何基础 Linux/Windows 机器均可秒级还原。
 
 ---
 
@@ -54,9 +61,10 @@ ark/
 ├── tmp/                      # 临时装配区 (git 忽略)
 ├── keys/                     # 封条密钥存放区 (git 忽略，请妥善异地备份 seal.key)
 └── pkg/                      # 核心模块源码
+    ├── oci/                  # 纯 Go 原生 OCI 直推/拉取客户端、Token 自动协商与内存单层 Tar 封装
     ├── archive/              # 纯 Go Tar 打包/解包与 AES-256 密闭加解密 (含 UID/GID 保持)
     ├── config/               # 清单配置与冷热优先级排序
-    ├── docker/               # BuildKit COPY --link 构型生成与容器调取
+    ├── docker/               # Docker BuildKit 传统备选引擎链路
     ├── github/               # GHCR 远端港口航次查询与分类轮转清理
     ├── hash/                 # 多并发树形哈希算法
     └── scanner/              # 自动工程探测与变动率评分引擎
@@ -98,15 +106,19 @@ ark scan /root/workspace
 
 ### 4. 登船推送 (Ship Cargo)
 ```bash
-# 模拟试航 (DRY RUN): 验证哈希对比、打包加密与 Dockerfile 生成，不实际上传
+# 模拟试航 (DRY RUN): 验证哈希对比、打包加密与 OCI Manifest 构型，不实际上传
 ark dry
 
-# 默认登船: 生成精确到秒的航次标签 (如 vps-20260912-153334)
+# 默认登船: 默认启用纯 Go 原生 OCI 极速直推引擎 (本地 0 额外落盘，0 无效压缩)
 ark board
 
 # 快捷按天生成航次标签 (如 vps-20260912，适合每日定时备份)
 ark board day
 # 或使用参数: ark board --day (或 -d)
+
+# 指定交付引擎 (默认: oci; 亦可指定使用传统 docker buildkit 引擎)
+ark board --engine=oci      # 纯 Go 原生直推 (免 Docker daemon, 速度最快)
+ark board --engine=docker   # 传统 Docker BuildKit 链路
 
 # 指定分类为 db 并按天生成航次标签 (生成: db-20260912)
 ark board db day
@@ -138,8 +150,12 @@ ark list vps
 
 ### 6. 下船还原货物 (Restore Cargo)
 ```bash
-# 卸载指定分类的最新班次 (自动检索远端该分类最新时间戳航次并还原):
+# 卸载指定分类的最新班次 (默认使用 OCI 原生流式调取，无 Docker 机器亦可秒级还原):
 ark land vps
+
+# 亦可强制指定调取引擎:
+ark land vps --engine=oci
+ark land vps --engine=docker
 
 # 卸载指定日期的历史班次到指定目录:
 ark land vps-20260912-140000 /root/workspace/restored_vps
