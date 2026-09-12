@@ -189,19 +189,13 @@ func runCheck(args []string) {
 	if cfg != nil && cfg.Encrypt {
 		keySource := "未检测到"
 		if cliKey != "" {
-			keySource = "命令行 --key 参数"
-		} else if os.Getenv("ARK_KEY") != "" {
-			keySource = "环境变量 ARK_KEY"
-		} else if os.Getenv("SEAL_KEY") != "" {
-			keySource = "环境变量 SEAL_KEY"
-		} else {
-			envPath := filepath.Join(ws, ".env")
-			if envData, err := os.ReadFile(envPath); err == nil && (strings.Contains(string(envData), "ARK_KEY=") || strings.Contains(string(envData), "SEAL_KEY=")) {
-				keySource = ".env 配置文件"
-			} else if _, p := findPersistedKey(ws); p != "" {
-				keySource = fmt.Sprintf("本地非明文密钥文件 (%s)", p)
-				printPass("存储安全", "密钥采用 [非明文加密密文] 安全落盘，无明文泄露风险，全流程免输密码")
-			}
+			keySource = "命令行 --key 参数 (已确定性派生工作密文)"
+		} else if envKey := getSealPassphraseFromEnv(ws); envKey != "" {
+			keySource = "配置文件 .env / 环境变量中的 ARK_SEAL_KEY (已确定性派生工作密文)"
+			printPass("存储安全", "已自动通过 ARK_SEAL_KEY 派生密文并同步至本地 keys/seal.key，全流程免输密码")
+		} else if _, p := findPersistedKey(ws); p != "" {
+			keySource = fmt.Sprintf("本地非明文密钥文件 (%s)", p)
+			printPass("存储安全", "密钥采用 [非明文加密密文] 安全落盘，无明文泄露风险，全流程免输密码")
 		}
 
 		passphrase, err := resolveSealKey(ws, false, cliKey)

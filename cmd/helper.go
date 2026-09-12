@@ -145,68 +145,87 @@ func findPersistedKey(ws string) (string, string) {
 	return "", ""
 }
 
-// resolveSealKey 统一解析用于加密和解密的工作密文 (优先使用本地持久化密文，实现全自动免密码)
+// getSealPassphraseFromEnv 从环境变量或 .env 中按优先级获取用户配置的原始封条口令
+func getSealPassphraseFromEnv(ws string) string {
+	loadEnvFile(ws)
+	for _, k := range []string{"ARK_SEAL_KEY", "ARK_KEY", "SEAL_KEY"} {
+		if val := strings.TrimSpace(os.Getenv(k)); val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
+// syncPersistedKey 确保本地密钥文件与派生出的非明文工作密文 100% 同步
+func syncPersistedKey(ws string, derivedSecret string) {
+	derivedSecret = strings.TrimSpace(derivedSecret)
+	if derivedSecret == "" {
+		return
+	}
+
+	keysDir := filepath.Join(ws, "keys")
+	keyPath := filepath.Join(keysDir, "seal.key")
+	_ = os.MkdirAll(keysDir, 0700)
+
+	existing, _ := os.ReadFile(keyPath)
+	if strings.TrimSpace(string(existing)) != derivedSecret {
+		_ = os.WriteFile(keyPath, []byte(derivedSecret+"\n"), 0600)
+	}
+
+	if home, err := os.UserHomeDir(); err == nil {
+		userArkDir := filepath.Join(home, ".ark")
+		_ = os.MkdirAll(userArkDir, 0700)
+		homeKeyPath := filepath.Join(userArkDir, "seal.key")
+		existingHome, _ := os.ReadFile(homeKeyPath)
+		if strings.TrimSpace(string(existingHome)) != derivedSecret {
+			_ = os.WriteFile(homeKeyPath, []byte(derivedSecret+"\n"), 0600)
+		}
+	}
+}
+
+// resolveSealKey 统一解析用于加密和解密的工作密文
+// 只要配置了 ARK_SEAL_KEY / ARK_KEY 或通过 --key 指定口令，100% 保证工作密钥由此生成并同步本地 keys/seal.key
 func resolveSealKey(ws string, allowGenerate bool, cliKey string) ([]byte, error) {
-	// 1. 命令行 --key 显式传参 (若用户临时指定口令，自动派生为密文)
-	if cliKey != "" {
-		derived := DeriveSealKey(cliKey)
+	rawKey := strings.TrimSpace(cliKey)
+	if rawKey == "" {
+		rawKey = getSealPassphraseFromEnv(ws)
+	}
+
+	// 1. 优先使用显式指定/配置的口令：确定性派生密文，并同步落盘保证本地密钥一致
+	if rawKey != "" {
+		derived := DeriveSealKey(rawKey)
+		syncPersistedKey(ws, derived)
 		return []byte(derived), nil
 	}
 
-	// 2. 环境变量 ARK_KEY 或 SEAL_KEY (自动派生)
-	if k := os.Getenv("ARK_KEY"); k != "" {
-		return []byte(DeriveSealKey(k)), nil
-	}
-	if k := os.Getenv("SEAL_KEY"); k != "" {
-		return []byte(DeriveSealKey(k)), nil
-	}
-
-	// 3. 工作区 .env 文件
-	envPath := filepath.Join(ws, ".env")
-	if envData, err := os.ReadFile(envPath); err == nil {
-		for _, line := range strings.Split(string(envData), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "ARK_KEY=") || strings.HasPrefix(line, "SEAL_KEY=") {
-				parts := strings.SplitN(line, "=", 2)
-				if len(parts) == 2 {
-					val := strings.Trim(parts[1], `"' `)
-					if val != "" {
-						return []byte(DeriveSealKey(val)), nil
-					}
-				}
-			}
-		}
-	}
-
-	// 4. 优先读取本地持久化密文文件 (ark keygen 生成的非明文文件，实现完全免密操作)
+	// 2. 未配置口令时，读取本地已有持久化密文文件 (ark keygen 生成的非明文文件)
 	if key, _ := findPersistedKey(ws); key != "" {
 		return []byte(key), nil
 	}
 
-	// 5. 若未找到且不允许自动生成，提示终端输入口令
+	// 3. 若未找到且不允许自动生成，提示终端交互输入口令
 	if !allowGenerate {
-		fmt.Print("[安全] 未检测到本地安全封条密钥文件，请输入安全口令: ")
+		fmt.Print("[安全] 未检测到本地安全封条密钥，请输入安全口令: ")
 		var input string
 		fmt.Scanln(&input)
 		input = strings.TrimSpace(input)
 		if input != "" {
-			return []byte(DeriveSealKey(input)), nil
+			derived := DeriveSealKey(input)
+			syncPersistedKey(ws, derived)
+			return []byte(derived), nil
 		}
 		return nil, fmt.Errorf("未提供有效封条密钥，无法解密封存货物")
 	}
 
-	// 6. 首次装载且允许自动生成：生成随机密文并持久化
+	// 4. 首次装载且完全无口令：生成真随机密文并持久化
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return nil, err
 	}
 	derivedKey := base64.StdEncoding.EncodeToString(buf)
+	syncPersistedKey(ws, derivedKey)
 
-	keysDir := filepath.Join(ws, "keys")
-	keyPath := filepath.Join(keysDir, "seal.key")
-	_ = os.MkdirAll(keysDir, 0700)
-	_ = os.WriteFile(keyPath, []byte(derivedKey+"\n"), 0600)
-
+	keyPath := filepath.Join(ws, "keys", "seal.key")
 	fmt.Printf("[安全] 首次装载，已自动生成非明文安全封条密钥: %s\n", keyPath)
 	return []byte(derivedKey), nil
 }
