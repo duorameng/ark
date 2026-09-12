@@ -50,7 +50,7 @@ jobs:
         run: |
           TAG_NAME="${{ github.ref_name }}"
           if [ -z "$TAG_NAME" ] || [[ "$TAG_NAME" != v* ]]; then
-            TAG_NAME="v1.1.0"
+            TAG_NAME=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.2.1")
           fi
           COMMIT_SHA="${{ github.sha }}"
           SHORT_SHA="${COMMIT_SHA:0:7}"

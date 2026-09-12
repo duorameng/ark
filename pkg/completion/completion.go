@@ -41,7 +41,17 @@ func GenBash() string {
 
 _ark_completion() {
     local cur prev words cword
-    _init_completion || return
+    if declare -F _init_completion >/dev/null 2>&1; then
+        _init_completion || return
+    else
+        COMPREPLY=()
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        prev=""
+        if [ "$COMP_CWORD" -ge 1 ]; then
+            prev="${COMP_WORDS[COMP_CWORD-1]}"
+        fi
+        cword=$COMP_CWORD
+    fi
 
     local commands="%s"
 
@@ -58,7 +68,11 @@ _ark_completion() {
             ;;
         unpack|scan)
             # Complete directory or file paths
-            _filedir
+            if declare -F _filedir >/dev/null 2>&1; then
+                _filedir
+            else
+                COMPREPLY=( $(compgen -f -- "$cur") )
+            fi
             return 0
             ;;
         completion)
@@ -71,6 +85,7 @@ _ark_completion() {
 }
 
 complete -F _ark_completion ark
+complete -F _ark_completion ./ark
 `, strings.Join(cmdNames, " "))
 }
 
@@ -162,7 +177,8 @@ func GenFish() string {
 	return sb.String()
 }
 
-// InstallShellCompletion 自动检测当前 Shell 并将自动补全挂载至配置文件
+// InstallShellCompletion 自动检测当前 Shell 并生成独立的本地补全脚本挂载至配置文件
+// 即使全局未安装 ark（仅在当前目录下执行 ./ark），也能完美支持自动补全！
 func InstallShellCompletion() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -170,41 +186,76 @@ func InstallShellCompletion() error {
 	}
 
 	shell := os.Getenv("SHELL")
-	targetRC := ""
-	snippet := ""
+	var compFile, targetRC, snippet string
 
 	if strings.Contains(shell, "zsh") {
+		compFile = filepath.Join(home, ".ark_completion.zsh")
 		targetRC = filepath.Join(home, ".zshrc")
-		snippet = "\n# Ark CLI autocompletion\neval \"$(ark completion zsh)\"\n"
+		snippet = GenZsh()
 	} else if strings.Contains(shell, "fish") {
 		fishDir := filepath.Join(home, ".config", "fish", "completions")
 		_ = os.MkdirAll(fishDir, 0755)
 		targetRC = filepath.Join(fishDir, "ark.fish")
-		snippet = GenFish()
-		return os.WriteFile(targetRC, []byte(snippet), 0644)
+		if err := os.WriteFile(targetRC, []byte(GenFish()), 0644); err != nil {
+			return fmt.Errorf("写入 Fish 补全脚本失败: %w", err)
+		}
+		fmt.Printf("✓ Fish 自动补全脚本已写入: %s\n", targetRC)
+		return nil
 	} else {
 		// 默认按 bash 处理
+		compFile = filepath.Join(home, ".ark_completion.bash")
 		targetRC = filepath.Join(home, ".bashrc")
-		snippet = "\n# Ark CLI autocompletion\nsource <(ark completion bash 2>/dev/null)\n"
+		snippet = GenBash()
 	}
 
-	content, _ := os.ReadFile(targetRC)
-	if strings.Contains(string(content), "ark completion") {
-		fmt.Printf("✓ 自动补全配置已存在于 %s，无需重复安装。\n", targetRC)
-		return nil
+	// 1. 将完整的自动补全定义写入独立的本地脚本文件，解除对系统全局二进制的依赖
+	if err := os.WriteFile(compFile, []byte(snippet), 0644); err != nil {
+		return fmt.Errorf("写入自动补全脚本文件 %s 失败: %w", compFile, err)
 	}
+	fmt.Printf("✓ 独立自动补全脚本已写入: %s\n", compFile)
 
-	f, err := os.OpenFile(targetRC, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("无法写入配置文件 %s: %w", targetRC, err)
-	}
-	defer f.Close()
+	// 2. 挂载到终端配置文件 (支持自动清理历史失效配置)
+	sourceLine := fmt.Sprintf("[ -f \"%s\" ] && source \"%s\"", compFile, compFile)
+	ensureShellRCMount(targetRC, sourceLine)
 
-	if _, err := f.WriteString(snippet); err != nil {
-		return err
-	}
-
-	fmt.Printf("✓ 成功将自动补全载入配置文件: %s\n", targetRC)
-	fmt.Println("👉 请运行 'source " + targetRC + "' 或重新打开终端，即刻享受 <Tab> 键极速补全！")
+	fmt.Printf("✓ 自动补全挂载配置已更新: %s\n", targetRC)
+	fmt.Println()
+	fmt.Println("🎉 安装完成！当前目录下敲 './ark <Tab>' 即可自动补全！")
+	fmt.Printf("👉 请运行 'source %s' 或重新打开终端即可立即生效。\n", targetRC)
 	return nil
+}
+
+// ensureShellRCMount 安全清理旧版本动态配置并写入最新的静态加载指令
+func ensureShellRCMount(rcFile, mountLine string) {
+	content, err := os.ReadFile(rcFile)
+	if err != nil {
+		f, createErr := os.OpenFile(rcFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if createErr == nil {
+			_, _ = f.WriteString("\n# Ark CLI autocompletion\n" + mountLine + "\n")
+			f.Close()
+		}
+		return
+	}
+
+	lines := strings.Split(string(content), "\n")
+	var cleaned []string
+	hasMount := false
+
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		// 清理旧版本遗留的动态调用 (如 source <(ark completion ...))
+		if strings.Contains(trimmed, "ark completion") && (strings.Contains(trimmed, "source <(") || strings.Contains(trimmed, "eval \"$(")) {
+			continue
+		}
+		if trimmed == mountLine {
+			hasMount = true
+		}
+		cleaned = append(cleaned, l)
+	}
+
+	if !hasMount {
+		cleaned = append(cleaned, "", "# Ark CLI autocompletion", mountLine)
+	}
+
+	_ = os.WriteFile(rcFile, []byte(strings.Join(cleaned, "\n")), 0644)
 }
