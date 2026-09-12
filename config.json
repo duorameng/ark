@@ -1,0 +1,18 @@
+{
+  "repository": "ghcr.io/duorameng/ark",
+  "category": "cate1",
+  "retention_count": 5,
+  "encrypt": true,
+  "sources": [
+    {
+      "id": "mock_static",
+      "name": "Static Archives",
+      "path": "test_data/static_archive"
+    },
+    {
+      "id": "mock_active",
+      "name": "Active Workspace",
+      "path": "test_data/active_workspace"
+    }
+  ]
+}

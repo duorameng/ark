@@ -1,0 +1,28 @@
+# Environment and credentials
+.env
+keys/
+*.key
+
+# Local cache and temporary data
+cache/
+tmp/
+*.age
+*.tar
+*.gz
+*.enc
+*.dat
+
+# IDE and OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+
+config.linux.json
+config.windows.json
+
+# Binaries
+/ark
+/ark.exe
+*.exe
