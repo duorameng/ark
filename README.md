@@ -114,7 +114,14 @@ ark board db day
 # 指定时间精度为分 (如 vps-20260912-1533)
 ark board --precision minute
 
-# 亦可在 config.json 中永久配置默认精度: "tag_precision": "day"
+# 指定推送失败重试次数 (默认 3 次，指数退避防网络抖动)
+ark board --retry 5    # 或简写: -r 5
+
+# 组合使用: 指定分类为 db、按天生成标签、失败重试 5 次
+ark board db day --retry 5
+
+# 亦可在 config.json 中永久配置默认精度与重试次数:
+# "tag_precision": "day", "push_retry": 5
 ```
 
 ### 5. 查验港口航次 (List Voyages)
@@ -179,5 +186,20 @@ ark completion powershell | Out-String | Invoke-Expression
 ```bash
 0 3 * * * cd /root/workspace/ark && ./ark board >> /var/log/ark_voyage.log 2>&1
 ```
+
+---
+
+## 动态编译构建 (Build with Dynamic Version)
+
+Ark 支持在构建时通过 Go 链接器参数动态注入版本号、Git Commit 与构建时间：
+
+```bash
+# 1. 快速构建指定版本 (Linux)
+go build -ldflags "-s -w -X main.Version=v1.2.0 -X main.GitCommit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date +%Y-%m-%d)" -o ark .
+
+# 2. 本地使用 PowerShell 脚本一键构建全平台二进制
+.\tmp\build.ps1 -Version "v1.2.0"
+```
+
 
 

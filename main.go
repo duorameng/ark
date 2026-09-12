@@ -4,9 +4,15 @@ import (
 	"ark/cmd"
 )
 
-// Version 当前编译版本号 (支持编译时 -ldflags 动态注入)
-var Version = "v1.1.0"
+var (
+	// Version 当前程序版本号 (支持构建时动态注入: -ldflags "-X main.Version=...")
+	Version = "dev"
+	// GitCommit 源码 Commit ID (支持构建时动态注入: -ldflags "-X main.GitCommit=...")
+	GitCommit = "none"
+	// BuildDate 编译构建日期 (支持构建时动态注入: -ldflags "-X main.BuildDate=...")
+	BuildDate = "unknown"
+)
 
 func main() {
-	cmd.Execute(Version)
+	cmd.Execute(Version, GitCommit, BuildDate)
 }

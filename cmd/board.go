@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"ark/pkg/archive"
 	"ark/pkg/config"
@@ -15,11 +17,21 @@ import (
 	"ark/pkg/timezone"
 )
 
-func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precision string) {
+func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precision string, retryCount int) {
 	category = cfg.Category
 	precision = cfg.TagPrecision
 	if precision == "" {
 		precision = "second"
+	}
+	retryCount = cfg.PushRetry
+	if retryCount <= 0 {
+		retryCount = 3
+	}
+
+	if envRetry := os.Getenv("ARK_PUSH_RETRY"); envRetry != "" {
+		if val, err := strconv.Atoi(envRetry); err == nil && val > 0 {
+			retryCount = val
+		}
 	}
 
 	var positional []string
@@ -54,6 +66,21 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			precision = strings.TrimPrefix(arg, "-p=")
 		case strings.HasPrefix(arg, "--time-format="):
 			precision = strings.TrimPrefix(arg, "--time-format=")
+		case arg == "--retry" || arg == "-r":
+			if i+1 < len(args) {
+				if v, err := strconv.Atoi(args[i+1]); err == nil && v > 0 {
+					retryCount = v
+				}
+				i++
+			}
+		case strings.HasPrefix(arg, "--retry="):
+			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "--retry=")); err == nil && v > 0 {
+				retryCount = v
+			}
+		case strings.HasPrefix(arg, "-r="):
+			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "-r=")); err == nil && v > 0 {
+				retryCount = v
+			}
 		default:
 			positional = append(positional, arg)
 		}
@@ -64,7 +91,7 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 		if strings.Contains(tag, "-") {
 			category = strings.SplitN(tag, "-", 2)[0]
 		}
-		return tag, category, "custom"
+		return tag, category, "custom", retryCount
 	}
 
 	// 智能位置参数分析
@@ -83,7 +110,7 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			if strings.Contains(p0, "-") {
 				tag = p0
 				category = strings.SplitN(p0, "-", 2)[0]
-				return tag, category, "custom"
+				return tag, category, "custom", retryCount
 			}
 			category = p0
 		}
@@ -101,13 +128,13 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			precision = "hour"
 		default:
 			tag = fmt.Sprintf("%s-%s", category, p1)
-			return tag, category, "custom"
+			return tag, category, "custom", retryCount
 		}
 	}
 
 	timeSuffix := timezone.GenerateTagTimeByPrecision(precision)
 	tag = fmt.Sprintf("%s-%s", category, timeSuffix)
-	return tag, category, precision
+	return tag, category, precision, retryCount
 }
 
 func runBoard(args []string, dryRun bool) {
@@ -122,7 +149,7 @@ func runBoard(args []string, dryRun bool) {
 		os.Exit(1)
 	}
 
-	tag, category, precision := parseBoardFlags(cfg, args)
+	tag, category, precision, retryCount := parseBoardFlags(cfg, args)
 
 	fmt.Println("================================================================")
 	fmt.Println("          🚢 Ark 班轮装载登船系统 (Golang Engine)               ")
@@ -131,6 +158,7 @@ func runBoard(args []string, dryRun bool) {
 	fmt.Printf("[场景] 所属分类: %s\n", category)
 	fmt.Printf("[航次] 班次编号: %s (时间精度: %s)\n", tag, precision)
 	fmt.Printf("[航次] 舱位配额: 该分类下保留最新 %d 个航次\n", cfg.RetentionCount)
+	fmt.Printf("[容灾] 推送重试配额: 失败自动重试 %d 次 (指数退避)\n", retryCount)
 	fmt.Printf("[安全] 货运封条: %v\n", cfg.Encrypt)
 
 	cacheDir := filepath.Join(ws, "cache")
@@ -276,8 +304,8 @@ func runBoard(args []string, dryRun bool) {
 	fmt.Printf("\n==> 班轮正在出港登船: %s...\n", fullTag)
 	fmt.Println("【免复传机制】：封条未变动的集装箱将显示 'Layer already exists'，0 流量瞬间交付！")
 
-	if err := docker.Push(fullTag); err != nil {
-		fmt.Fprintf(os.Stderr, "[-] 推送 %s 失败: %v\n", fullTag, err)
+	if err := docker.PushWithRetry(fullTag, retryCount, 3*time.Second); err != nil {
+		fmt.Fprintf(os.Stderr, "[-] 航次推送失败 (已尝试 %d 次): %v\n", retryCount, err)
 		os.Exit(1)
 	}
 	fmt.Println("✓ 航次交付登船成功！")

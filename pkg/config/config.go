@@ -22,6 +22,7 @@ type Config struct {
 	RetentionCount int      `json:"retention_count"`
 	Encrypt        bool     `json:"encrypt"`
 	TagPrecision   string   `json:"tag_precision,omitempty"` // 时间标签精度: day(天) / second(秒，默认) / minute(分)
+	PushRetry      int      `json:"push_retry,omitempty"`    // docker push 失败重试次数 (默认 3 次)
 	Sources        []Source `json:"sources"`
 }
 
@@ -33,6 +34,7 @@ func DefaultConfig() *Config {
 		RetentionCount: 5,
 		Encrypt:        true,
 		TagPrecision:   "second",
+		PushRetry:      3,
 		Sources:        make([]Source, 0),
 	}
 }

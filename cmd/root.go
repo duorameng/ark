@@ -8,13 +8,23 @@ import (
 	"ark/pkg/update"
 )
 
-// AppVersion 当前应用程序版本号
-var AppVersion = "v1.1.0"
+var (
+	// AppVersion 当前应用程序版本号 (构建时动态注入)
+	AppVersion   = "dev"
+	AppCommit    = "none"
+	AppBuildDate = "unknown"
+)
 
 // Execute 统一命令分发与调度入口
-func Execute(version string) {
+func Execute(version, commit, buildDate string) {
 	if version != "" {
 		AppVersion = version
+	}
+	if commit != "" {
+		AppCommit = commit
+	}
+	if buildDate != "" {
+		AppBuildDate = buildDate
 	}
 
 	update.CleanOldExecutable()
@@ -49,7 +59,11 @@ func Execute(version string) {
 	case "completion", "补全":
 		runCompletion(args)
 	case "version", "-v", "--version", "版本":
-		fmt.Printf("ark version %s (%s/%s)\n", AppVersion, runtime.GOOS, runtime.GOARCH)
+		extra := ""
+		if AppCommit != "none" || AppBuildDate != "unknown" {
+			extra = fmt.Sprintf(" (commit: %s, built: %s)", AppCommit, AppBuildDate)
+		}
+		fmt.Printf("ark version %s (%s/%s)%s\n", AppVersion, runtime.GOOS, runtime.GOARCH, extra)
 	case "help", "--help", "-h", "帮助":
 		PrintHelp()
 	default:

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // GenerateDockerfile 生成独立分层的 BuildKit Dockerfile
@@ -49,12 +50,45 @@ func Login(registryHost, username, token string) error {
 	return cmd.Run()
 }
 
-// Push 将镜像推送到 OCI Registry
+// PushWithRetry 将镜像推送到 OCI Registry，支持指定重试次数与自动退避重试
+func PushWithRetry(tag string, maxRetries int, initialDelay time.Duration) error {
+	if maxRetries <= 0 {
+		maxRetries = 1
+	}
+
+	var lastErr error
+	delay := initialDelay
+	if delay <= 0 {
+		delay = 3 * time.Second
+	}
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		cmd := exec.Command("docker", "push", tag)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err := cmd.Run()
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		if attempt < maxRetries {
+			fmt.Fprintf(os.Stderr, "\n[!] 镜像推送遇到网络抖动或超时 (%v)，正在进行第 %d/%d 次重试 (等待 %v)...\n", err, attempt+1, maxRetries, delay)
+			time.Sleep(delay)
+			// 指数退避，上限 15 秒
+			delay *= 2
+			if delay > 15*time.Second {
+				delay = 15 * time.Second
+			}
+		}
+	}
+
+	return fmt.Errorf("连续重试 %d 次推送均失败: %w", maxRetries, lastErr)
+}
+
+// Push 兼容原有单次调用
 func Push(tag string) error {
-	cmd := exec.Command("docker", "push", tag)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return PushWithRetry(tag, 1, 0)
 }
 
 // Pull 从 OCI Registry 拉取镜像
