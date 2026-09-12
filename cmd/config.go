@@ -28,6 +28,59 @@ func getWorkspaceRoot() string {
 	return cwd
 }
 
+// parseEnvValue 健壮解析 .env 单行配置值:
+// 1. 消除 Windows CRLF 影响与首尾空白;
+// 2. 支持双引号包裹 "val" 并自动截断引号外的行尾注释 (如 "user" # comment);
+// 3. 支持单引号包裹 'val' 并自动截断引号外的行尾注释;
+// 4. 支持无引号配置项并消除行尾 # 注释 (如 123456 # comment -> 123456);
+// 5. 自动还原转义字符.
+func parseEnvValue(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	// 双引号包裹值
+	if strings.HasPrefix(raw, "\"") {
+		endIdx := -1
+		escaped := false
+		for i := 1; i < len(raw); i++ {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if raw[i] == '\\' {
+				escaped = true
+				continue
+			}
+			if raw[i] == '"' {
+				endIdx = i
+				break
+			}
+		}
+		if endIdx != -1 {
+			val := raw[1:endIdx]
+			val = strings.ReplaceAll(val, `\"`, `"`)
+			val = strings.ReplaceAll(val, `\\`, `\`)
+			return val
+		}
+	}
+
+	// 单引号包裹值
+	if strings.HasPrefix(raw, "'") {
+		endIdx := strings.Index(raw[1:], "'")
+		if endIdx != -1 {
+			return raw[1 : endIdx+1]
+		}
+	}
+
+	// 无引号包裹值: 去除行尾注释 (从第一个 # 处截断)
+	if commentIdx := strings.Index(raw, "#"); commentIdx != -1 {
+		raw = strings.TrimSpace(raw[:commentIdx])
+	}
+	return strings.Trim(raw, `"' `)
+}
+
 // loadEnvFile 从工作区加载 .env 文件，并将其中未定义的配置注入至进程环境变量
 func loadEnvFile(workspaceRoot string) {
 	envPath := filepath.Join(workspaceRoot, config.EnvFileName)
@@ -35,7 +88,9 @@ func loadEnvFile(workspaceRoot string) {
 	if err != nil {
 		return
 	}
-	lines := strings.Split(string(data), "\n")
+	normalized := strings.ReplaceAll(string(data), "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	lines := strings.Split(normalized, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -44,7 +99,7 @@ func loadEnvFile(workspaceRoot string) {
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) == 2 {
 			k := strings.TrimSpace(parts[0])
-			v := strings.Trim(strings.TrimSpace(parts[1]), `"' `)
+			v := parseEnvValue(parts[1])
 			if os.Getenv(k) == "" && v != "" {
 				_ = os.Setenv(k, v)
 			}

@@ -339,6 +339,28 @@ func TestFixedTagParsing(t *testing.T) {
 	}
 }
 
+func TestParseEnvValue(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{`"sample_user@example.com"       # 阿里云登录账号/手机号/RAM子账号`, "sample_user@example.com"},
+		{`"mock_secret_password_123"   # 阿里云控制台设置的固定访问密码`, "mock_secret_password_123"},
+		{`"registry.cn-hangzhou.aliyuncs.com/mock_ns/ark"`, "registry.cn-hangzhou.aliyuncs.com/mock_ns/ark"},
+		{`'single_quoted_val'  # comment`, "single_quoted_val"},
+		{`unquoted_value   # inline comment`, "unquoted_value"},
+		{`simple_no_comment`, "simple_no_comment"},
+		{`"val with \"escaped\" quotes"`, `val with "escaped" quotes`},
+	}
+
+	for _, tt := range tests {
+		got := parseEnvValue(tt.input)
+		if got != tt.expected {
+			t.Errorf("parseEnvValue(%q) = %q, expected %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
 
 
 
