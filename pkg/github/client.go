@@ -3,7 +3,6 @@ package github
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -55,54 +54,157 @@ func NewClient(repo, token string) *Client {
 	}
 }
 
-// ListVersions 获取所有镜像版本 (支持全量自动分页)
+// ListVersions 获取所有镜像版本 (支持全量自动分页与多账号路径自适应探测)
 func (c *Client) ListVersions() ([]VersionInfo, error) {
-	allVersions := make([]VersionInfo, 0)
-	page := 1
+	endpoints := []string{
+		"https://api.github.com/user/packages/container/%s/versions",
+		"https://api.github.com/users/%s/packages/container/%s/versions",
+		"https://api.github.com/orgs/%s/packages/container/%s/versions",
+	}
 
-	for {
-		url := fmt.Sprintf("https://api.github.com/user/packages/container/%s/versions?per_page=100&page=%d", c.Package, page)
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			return nil, err
+	for _, epPattern := range endpoints {
+		var ep string
+		if strings.Count(epPattern, "%s") == 2 {
+			ep = fmt.Sprintf(epPattern, c.Owner, c.Package)
+		} else {
+			ep = fmt.Sprintf(epPattern, c.Package)
 		}
 
+		allVersions := make([]VersionInfo, 0)
+		page := 1
+		success := false
+
+		for {
+			u := fmt.Sprintf("%s?per_page=100&page=%d", ep, page)
+			req, err := http.NewRequest("GET", u, nil)
+			if err != nil {
+				break
+			}
+			req.Header.Set("Authorization", "Bearer "+c.Token)
+			req.Header.Set("Accept", "application/vnd.github+json")
+
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				break
+			}
+
+			if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden {
+				resp.Body.Close()
+				break
+			}
+
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				break
+			}
+
+			var pageVersions []VersionInfo
+			err = json.NewDecoder(resp.Body).Decode(&pageVersions)
+			resp.Body.Close()
+			if err != nil {
+				break
+			}
+
+			success = true
+			allVersions = append(allVersions, pageVersions...)
+			if len(pageVersions) < 100 {
+				break
+			}
+			page++
+		}
+
+		if success {
+			return allVersions, nil
+		}
+	}
+
+	return nil, fmt.Errorf("无法获取仓库 %s/%s 的版本信息，请确认 GH_TOKEN 具备 packages 读写权限", c.Owner, c.Package)
+}
+
+// DeleteVersion 删除指定的 Package 版本
+func (c *Client) DeleteVersion(versionID int64) error {
+	urls := []string{
+		fmt.Sprintf("https://api.github.com/user/packages/container/%s/versions/%d", c.Package, versionID),
+		fmt.Sprintf("https://api.github.com/users/%s/packages/container/%s/versions/%d", c.Owner, c.Package, versionID),
+		fmt.Sprintf("https://api.github.com/orgs/%s/packages/container/%s/versions/%d", c.Owner, c.Package, versionID),
+	}
+
+	var lastErr error
+	for _, u := range urls {
+		req, err := http.NewRequest("DELETE", u, nil)
+		if err != nil {
+			continue
+		}
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 		req.Header.Set("Accept", "application/vnd.github+json")
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			return nil, err
+			lastErr = err
+			continue
 		}
-
-		if resp.StatusCode == http.StatusNotFound {
-			resp.Body.Close()
-			return nil, nil
-		}
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return nil, fmt.Errorf("GitHub API 响应异常 (HTTP %d): %s", resp.StatusCode, string(body))
-		}
-
-		var pageVersions []VersionInfo
-		err = json.NewDecoder(resp.Body).Decode(&pageVersions)
 		resp.Body.Close()
-		if err != nil {
-			return nil, err
+		if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+			return nil
 		}
-
-		allVersions = append(allVersions, pageVersions...)
-		if len(pageVersions) < 100 {
-			break
+		if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusForbidden {
+			lastErr = fmt.Errorf("删除版本失败 (HTTP %d)", resp.StatusCode)
 		}
-		page++
 	}
 
-	return allVersions, nil
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("未找到对应版本或权限不足")
 }
 
-// PruneCategoryVersions 根据分类与保留上限，按日期自动清理旧版本
+// PruneUntaggedVersions 扫描并清理所有未打标签 (untagged) 的孤立/悬空版本
+func (c *Client) PruneUntaggedVersions() (int, error) {
+	if c.Token == "" {
+		return 0, fmt.Errorf("未配置 GitHub Token，无法清理远端悬空版本")
+	}
+
+	versions, err := c.ListVersions()
+	if err != nil {
+		return 0, err
+	}
+
+	deletedCount := 0
+	for _, v := range versions {
+		if len(v.Metadata.Container.Tags) == 0 {
+			nameSnippet := v.Name
+			if len(nameSnippet) > 19 {
+				nameSnippet = nameSnippet[:19] + "..."
+			}
+			fmt.Printf("   -> 正在清理远端未打标孤立版本: ID %d (%s, 创建于: %s)...\n",
+				v.ID, nameSnippet, timezone.FormatDefault(v.CreatedAt))
+			if err := c.DeleteVersion(v.ID); err == nil {
+				fmt.Printf("      ✓ 已成功删除\n")
+				deletedCount++
+			} else {
+				fmt.Printf("      [!] 提示: 删除遇到问题: %v\n", err)
+			}
+		}
+	}
+
+	return deletedCount, nil
+}
+
+// getBaseVoyageTag 提取主航次标签名称 (去除 -amd64, -arm64, -latest 后缀)
+func getBaseVoyageTag(tag string) string {
+	t := strings.TrimSuffix(tag, "-amd64")
+	t = strings.TrimSuffix(t, "-arm64")
+	t = strings.TrimSuffix(t, "-latest")
+	return t
+}
+
+type voyageGroup struct {
+	baseTag   string
+	createdAt time.Time
+	versions  []VersionInfo
+}
+
+// PruneCategoryVersions 根据分类与保留上限，按日期自动清理旧版本 (支持多架构子标签聚合轮转)
 func (c *Client) PruneCategoryVersions(category string, retentionCount int) error {
 	if c.Token == "" || retentionCount <= 0 {
 		return nil
@@ -114,52 +216,65 @@ func (c *Client) PruneCategoryVersions(category string, retentionCount int) erro
 	}
 
 	prefix := category + "-"
-	matched := make([]VersionInfo, 0)
+	groupMap := make(map[string]*voyageGroup)
 
 	for _, v := range allVersions {
-		isMatch := false
 		for _, tag := range v.Metadata.Container.Tags {
 			if strings.HasPrefix(tag, prefix) {
-				isMatch = true
-				break
+				base := getBaseVoyageTag(tag)
+				grp, exists := groupMap[base]
+				if !exists {
+					grp = &voyageGroup{
+						baseTag:   base,
+						createdAt: v.CreatedAt,
+						versions:  make([]VersionInfo, 0),
+					}
+					groupMap[base] = grp
+				}
+				if v.CreatedAt.After(grp.createdAt) {
+					grp.createdAt = v.CreatedAt
+				}
+				// 避免重复添加同一个 VersionInfo
+				already := false
+				for _, ev := range grp.versions {
+					if ev.ID == v.ID {
+						already = true
+						break
+					}
+				}
+				if !already {
+					grp.versions = append(grp.versions, v)
+				}
 			}
-		}
-		if isMatch {
-			matched = append(matched, v)
 		}
 	}
 
-	fmt.Printf("当前 [%s] 分类已记录航次: %d，保留上限: %d\n", category, len(matched), retentionCount)
+	groups := make([]*voyageGroup, 0, len(groupMap))
+	for _, grp := range groupMap {
+		groups = append(groups, grp)
+	}
 
-	if len(matched) <= retentionCount {
+	fmt.Printf("当前 [%s] 分类已记录航次: %d，保留上限: %d\n", category, len(groups), retentionCount)
+
+	if len(groups) <= retentionCount {
 		fmt.Println("✓ 泊位充足，无需清理旧航次。")
 		return nil
 	}
 
 	// 按创建时间由新到旧排序
-	sort.Slice(matched, func(i, j int) bool {
-		return matched[i].CreatedAt.After(matched[j].CreatedAt)
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].createdAt.After(groups[j].createdAt)
 	})
 
-	toDelete := matched[retentionCount:]
-	for _, v := range toDelete {
-		tags := strings.Join(v.Metadata.Container.Tags, ", ")
-		fmt.Printf("-> 正在归档 [%s] 过期航次 ID: %d [Tags: %s] (创建于: %s)...\n",
-			category, v.ID, tags, timezone.FormatDefault(v.CreatedAt))
+	toDeleteGroups := groups[retentionCount:]
+	for _, grp := range toDeleteGroups {
+		fmt.Printf("-> 正在归档 [%s] 过期航次: %s (包含 %d 个平台版本清单, 交付于: %s)...\n",
+			category, grp.baseTag, len(grp.versions), timezone.FormatDefault(grp.createdAt))
 
-		delURL := fmt.Sprintf("https://api.github.com/user/packages/container/%s/versions/%d", c.Package, v.ID)
-		delReq, err := http.NewRequest("DELETE", delURL, nil)
-		if err != nil {
-			continue
-		}
-		delReq.Header.Set("Authorization", "Bearer "+c.Token)
-		delReq.Header.Set("Accept", "application/vnd.github+json")
-
-		delResp, err := c.httpClient.Do(delReq)
-		if err == nil {
-			delResp.Body.Close()
-			if delResp.StatusCode == http.StatusNoContent || delResp.StatusCode == http.StatusOK {
-				fmt.Println("   ✓ 归档指令已送达")
+		for _, v := range grp.versions {
+			tags := strings.Join(v.Metadata.Container.Tags, ", ")
+			if err := c.DeleteVersion(v.ID); err == nil {
+				fmt.Printf("   ✓ 已归档子项 ID %d [%s]\n", v.ID, tags)
 			}
 		}
 	}
@@ -207,7 +322,7 @@ func (c *Client) PrintCategoryVersions(categoryFilter string) error {
 	return nil
 }
 
-// GetLatestTag 自动从远端港口获取指定分类下创建时间最新的航次 Tag (无须依赖 latest 标签)
+// GetLatestTag 自动从远端港口获取指定分类下创建时间最新的航次 Tag (无须依赖 latest 标签，优先匹配多架构主标签)
 func (c *Client) GetLatestTag(category string) (string, error) {
 	versions, err := c.ListVersions()
 	if err != nil {
@@ -221,7 +336,10 @@ func (c *Client) GetLatestTag(category string) (string, error) {
 
 	for _, ver := range versions {
 		for _, tag := range ver.Metadata.Container.Tags {
-			if strings.HasPrefix(tag, category+"-") && !strings.HasSuffix(tag, "-latest") {
+			if strings.HasPrefix(tag, category+"-") &&
+				!strings.HasSuffix(tag, "-latest") &&
+				!strings.HasSuffix(tag, "-amd64") &&
+				!strings.HasSuffix(tag, "-arm64") {
 				return tag, nil
 			}
 		}

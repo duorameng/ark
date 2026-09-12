@@ -502,22 +502,34 @@ func runBoard(args []string, dryRun bool) {
 			os.Exit(1)
 		}
 
-		fmt.Println("-> 正在提交平台 Manifest (AMD64 & ARM64)...")
+		tagAMD := fmt.Sprintf("%s-amd64", tag)
+		tagARM := fmt.Sprintf("%s-arm64", tag)
+		fmt.Println("-> 正在提交并打标多架构平台清单 (AMD64 & ARM64)...")
+		// 先提交子平台并赋予显式 tag (消除 GitHub Packages 网页端 untagged 悬空显示)
 		if err := ociClient.PutManifest(ctx, mfDigestAMD, mfBytesAMD, oci.MediaTypeDockerManifestV2); err != nil {
 			fmt.Fprintf(os.Stderr, "[-] 提交 AMD64 Manifest 失败: %v\n", err)
 			os.Exit(1)
 		}
+		if err := ociClient.PutManifest(ctx, tagAMD, mfBytesAMD, oci.MediaTypeDockerManifestV2); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 打标 AMD64 Manifest (%s) 失败: %v\n", tagAMD, err)
+			os.Exit(1)
+		}
+
 		if err := ociClient.PutManifest(ctx, mfDigestARM, mfBytesARM, oci.MediaTypeDockerManifestV2); err != nil {
 			fmt.Fprintf(os.Stderr, "[-] 提交 ARM64 Manifest 失败: %v\n", err)
 			os.Exit(1)
 		}
+		if err := ociClient.PutManifest(ctx, tagARM, mfBytesARM, oci.MediaTypeDockerManifestV2); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 打标 ARM64 Manifest (%s) 失败: %v\n", tagARM, err)
+			os.Exit(1)
+		}
 
-		fmt.Printf("-> 正在绑定多架构航次标签 (ManifestList PUT): %s...\n", fullTag)
+		fmt.Printf("-> 正在绑定多架构班轮总览标签 (ManifestList PUT): %s...\n", fullTag)
 		if err := ociClient.PutManifest(ctx, tag, indexBytes, oci.MediaTypeDockerManifestList); err != nil {
 			fmt.Fprintf(os.Stderr, "[-] 提交多架构 ManifestList 失败: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("✓ 航次交付登船成功 (Zero-Docker Pipeline 双架构 linux/amd64 + linux/arm64 原生就绪)！")
+		fmt.Printf("✓ 航次交付登船成功 (双架构 linux/amd64 + linux/arm64 显式打标: %s, %s, %s)！\n", tag, tagAMD, tagARM)
 	} else {
 		// Docker CLI 备选引擎链路
 		if token != "" {

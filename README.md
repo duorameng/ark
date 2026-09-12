@@ -15,6 +15,7 @@
    - **内存单通道流式直推 (64KB Buffer)**：宿主机额外磁盘占用**严格为 0 字节**，完全杜绝 Docker BuildKit 对已加密 `.dat` 密文的无效二次 CPU 压缩。
    - **性能飞跃**：消灭 Build Context 传输 (55s) 与二次压缩干烧 (140s)，耗时直接从近 4 分钟骤降至 20~30 秒（仅受限于上传带宽）。
    - **双架构原生索引 (linux/amd64 + linux/arm64)**：自动生成标准 OCI Image Index (Manifest List)，双架构共享数据 Layer（0 额外存储，0 额外流量）；Apple Silicon Mac、树莓派、甲骨文 ARM VPS 或 Intel/AMD 主机运行 `docker pull` 原生匹配，0 架构警告。
+   - **子平台显式打标 (消除 Untagged 悬空显示)**：自动为多架构子清单打上 `<tag>-amd64` 与 `<tag>-arm64` 标签，消除 GitHub Packages 网页端散落裸露的 untagged 悬空版本条目，支持按需精确拉取单一架构版本。
    - **双向平滑引擎选择**：默认启用 OCI 原生直推引擎，保留 `--engine=docker` 作为传统备选。
 
 3. **数字 UID/GID 与文件权限严格保持 (Postgres 等服务无缝保障)**：
@@ -175,8 +176,14 @@ ark unpack cache /root/workspace/all_restored
 # 一键清空 cache/ 缓存、tmp/ 临时文件、历史落地货物目录，深度释放 Docker 悬空层与 BuildKit 缓存，恢复初始状态:
 ark clean
 
+# 自动扫描并清理远端 GitHub Packages 孤立/悬空的未打标 (untagged) 版本:
+ark clean --untagged
+
 # 连同本地历史关联的 Docker 镜像一并清理:
 ark clean --docker
+
+# 全量彻底重置 (本地工作区 + Docker 镜像 + 远端所有 untagged 孤儿版本):
+ark clean --all
 ```
 
 ### 9. 自我升级 (Self-Update with CDN Failover)
