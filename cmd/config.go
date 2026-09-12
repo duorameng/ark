@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"ark/pkg/config"
+	"ark/pkg/scanner"
 )
 
 // getWorkspaceRoot 获取工作区根目录路径
@@ -175,10 +177,139 @@ func extractEngineFlag(args []string) ([]string, string) {
 	return cleaned, engine
 }
 
+// extractDestFlag 从命令行参数中提取 --dest, --destination, --output, -o 目标恢复目录参数
+func extractDestFlag(args []string) ([]string, string) {
+	var cleaned []string
+	dest := ""
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--dest" || arg == "--destination" || arg == "--output" || arg == "-o" {
+			if i+1 < len(args) {
+				dest = args[i+1]
+				i++
+				continue
+			}
+		} else if strings.HasPrefix(arg, "--dest=") {
+			dest = strings.TrimPrefix(arg, "--dest=")
+			continue
+		} else if strings.HasPrefix(arg, "--destination=") {
+			dest = strings.TrimPrefix(arg, "--destination=")
+			continue
+		} else if strings.HasPrefix(arg, "--output=") {
+			dest = strings.TrimPrefix(arg, "--output=")
+			continue
+		} else if strings.HasPrefix(arg, "-o=") {
+			dest = strings.TrimPrefix(arg, "-o=")
+			continue
+		}
+		cleaned = append(cleaned, arg)
+	}
+
+	return cleaned, dest
+}
+
+// resolveBackupDir 综合解析待备份目录路径: 命令行参数 > 环境变量 (ARK_BACKUP_DIR / ARK_BACKUP_PATH / ARK_SOURCE_DIR) > 工作区根目录
+func resolveBackupDir(ws, cliDir string) string {
+	if strings.TrimSpace(cliDir) != "" {
+		return strings.TrimSpace(cliDir)
+	}
+	loadEnvFile(ws)
+	for _, key := range []string{config.EnvArkBackupDir, config.EnvArkBackupPath, config.EnvArkSourceDir} {
+		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+			parts := strings.Split(val, ",")
+			target := strings.TrimSpace(parts[0])
+			if !filepath.IsAbs(target) {
+				return filepath.Join(ws, target)
+			}
+			return target
+		}
+	}
+	return ws
+}
+
+// resolveBackupSourcesFromEnv 从 .env 环境变量中动态探测并装配备份货舱舱位源:
+// 1. 优先检索 ARK_BACKUP_DIR / ARK_BACKUP_PATH / ARK_SOURCE_DIR;
+// 2. 支持以逗号/分号分隔的多个目录，如: "/data/web, /data/db";
+// 3. 若为单个总目录且包含子结构，自动调用 scanner.ScanRoot 智能分离子模块与根同级文件;
+func resolveBackupSourcesFromEnv(ws string) []config.Source {
+	loadEnvFile(ws)
+	var rawPath string
+	for _, key := range []string{config.EnvArkBackupDir, config.EnvArkBackupPath, config.EnvArkSourceDir} {
+		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+			rawPath = val
+			break
+		}
+	}
+	if rawPath == "" {
+		return nil
+	}
+
+	rawParts := strings.FieldsFunc(rawPath, func(r rune) bool {
+		return r == ',' || r == ';'
+	})
+
+	sources := make([]config.Source, 0)
+	if len(rawParts) > 1 {
+		for i, part := range rawParts {
+			p := strings.TrimSpace(part)
+			if p == "" {
+				continue
+			}
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(ws, p)
+			}
+			baseName := filepath.Base(p)
+			id := strings.Map(func(r rune) rune {
+				if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+					return r
+				}
+				return '_'
+			}, baseName)
+			if id == "" {
+				id = fmt.Sprintf("src_%d", i+1)
+			}
+			sources = append(sources, config.Source{
+				ID:       id,
+				Name:     baseName,
+				Path:     p,
+				Priority: config.DefaultPriorityBase + i*5,
+			})
+		}
+		return sources
+	}
+
+	if len(rawParts) == 1 {
+		singlePath := strings.TrimSpace(rawParts[0])
+		if !filepath.IsAbs(singlePath) {
+			singlePath = filepath.Join(ws, singlePath)
+		}
+
+		if stat, err := os.Stat(singlePath); err == nil && stat.IsDir() {
+			if results, err := scanner.ScanRoot(singlePath); err == nil && len(results) > 0 {
+				for _, r := range results {
+					sources = append(sources, r.Source)
+				}
+				return sources
+			}
+			baseName := filepath.Base(singlePath)
+			sources = append(sources, config.Source{
+				ID:       baseName,
+				Name:     baseName,
+				Path:     singlePath,
+				Priority: config.DefaultPriorityBase,
+			})
+			return sources
+		}
+	}
+
+	return nil
+}
+
 // LoadAppConfig 统一配置加载引擎 (全局唯一的配置加载入口):
 // 1. 自动载入工作区根目录与 .env 环境配置；
-// 2. 尝试读取工作区 config.json；
-// 3. 若物理 config.json 不存在 (灾难恢复/全新部署/只读查验场景)，构建默认配置对象，绝不阻断运行；
+// 2. 尝试读取工作区 config.json 并自动对 sources 路径执行环境变量展开；
+// 3. 若物理 config.json 不存在或 sources 为空，自动通过 .env (ARK_BACKUP_DIR) 填充动态备份源；
 // 4. 结合命令行参数 (--repo)、环境变量 (ARK_REPOSITORY) 和配置文件确定最终 Repository；
 // 5. 返回 (*config.Config, hasConfigFile bool, err error)。
 func LoadAppConfig(ws, cliRepo string) (*config.Config, bool, error) {
@@ -208,7 +339,20 @@ func LoadAppConfig(ws, cliRepo string) (*config.Config, bool, error) {
 			CleanAllAfterPush: &defaultCleanAll,
 			Sources:           make([]config.Source, 0),
 		}
+
+		// 核心亮点：免 config.json 场景下，自动装载来自 .env (ARK_BACKUP_DIR) 的备份舱位
+		if envSources := resolveBackupSourcesFromEnv(ws); len(envSources) > 0 {
+			cfg.Sources = envSources
+		}
+
 		return cfg, false, err
+	}
+
+	// 若 config.json 存在但 sources 列表为空，尝试通过 .env 中的 ARK_BACKUP_DIR 自动补全
+	if len(cfg.Sources) == 0 {
+		if envSources := resolveBackupSourcesFromEnv(ws); len(envSources) > 0 {
+			cfg.Sources = envSources
+		}
 	}
 
 	cfg.Repository = resolveRepository(cfg.Repository, cliRepo)

@@ -13,17 +13,23 @@ import (
 
 func runUnpack(args []string) {
 	cleanedArgs, cliKey := extractKeyFlag(args)
+	cleanedArgs, cliDest := extractDestFlag(cleanedArgs)
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
+	loadEnvFile(ws)
 	targetPath := "cache"
 	destDir := ""
 
 	if len(args) > 0 {
 		targetPath = args[0]
 	}
-	if len(args) > 1 {
+	if cliDest != "" {
+		destDir = cliDest
+	} else if len(args) > 1 {
 		destDir = args[1]
+	} else if envRestore := os.Getenv(config.EnvArkRestoreDir); envRestore != "" {
+		destDir = envRestore
 	}
 
 	if !filepath.IsAbs(targetPath) {

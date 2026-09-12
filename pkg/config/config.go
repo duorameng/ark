@@ -88,6 +88,10 @@ func Load(path string) (*Config, error) {
 		cfg.RetentionCount = DefaultRetentionCount
 	}
 
+	for i := range cfg.Sources {
+		cfg.Sources[i].Path = os.ExpandEnv(cfg.Sources[i].Path)
+	}
+
 	return cfg, nil
 }
 

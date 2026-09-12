@@ -19,9 +19,11 @@ func runLand(args []string) {
 	cleanedArgs, cliEngine := extractEngineFlag(args)
 	cleanedArgs, cliKey := extractKeyFlag(cleanedArgs)
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
+	cleanedArgs, cliDest := extractDestFlag(cleanedArgs)
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
+	loadEnvFile(ws)
 	cfg, _, _ := LoadAppConfig(ws, cliRepo)
 
 	category := cfg.Category
@@ -39,6 +41,11 @@ func runLand(args []string) {
 		if strings.Contains(param, "-") && len(strings.Split(param, "-")) >= 3 {
 			tag = param
 			category = strings.SplitN(param, "-", 2)[0]
+		} else if strings.Contains(param, "/") || strings.Contains(param, "\\") {
+			// 若单参数包含路径分隔符，智能识别为用户希望恢复到的目标路径，分类自动取默认
+			if cliDest == "" {
+				cliDest = param
+			}
 		} else {
 			category = param
 		}
@@ -64,10 +71,18 @@ func runLand(args []string) {
 		}
 	}
 
-	if len(args) > 1 {
+	// 综合确定目标恢复目录：命令行 -o/--dest > 命令行第 2 参数 > 环境变量 ARK_RESTORE_DIR > 默认落地目录
+	if cliDest != "" {
+		destDir = cliDest
+	} else if len(args) > 1 {
 		destDir = args[1]
+	} else if envRestore := os.Getenv(config.EnvArkRestoreDir); envRestore != "" {
+		destDir = envRestore
 	} else {
 		destDir = filepath.Join(ws, fmt.Sprintf("cargo_landed_%s", category))
+	}
+	if !filepath.IsAbs(destDir) {
+		destDir = filepath.Join(ws, destDir)
 	}
 
 	fullImage := fmt.Sprintf("%s:%s", cfg.Repository, tag)

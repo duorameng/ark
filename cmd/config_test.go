@@ -95,3 +95,54 @@ func TestExtractFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestBackupDirFromEnv(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "ark_backup_env_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// 1. 创建模拟的备份目录，包含子目录和文件
+	mockBackupDir := filepath.Join(tempDir, "my_backup_target")
+	_ = os.MkdirAll(filepath.Join(mockBackupDir, "db"), 0755)
+	_ = os.WriteFile(filepath.Join(mockBackupDir, "db", "data.db"), []byte("db"), 0644)
+	_ = os.WriteFile(filepath.Join(mockBackupDir, "docker-compose.yml"), []byte("version: '3'"), 0644)
+
+	// 2. 写入 .env 文件
+	envContent := "ARK_BACKUP_DIR=" + mockBackupDir + "\n"
+	_ = os.WriteFile(filepath.Join(tempDir, ".env"), []byte(envContent), 0644)
+
+	// 3. 在无 config.json 情况下加载配置
+	cfg, _, err := LoadAppConfig(tempDir, "")
+	if err == nil {
+		t.Errorf("expected non-nil error indicating no physical config.json")
+	}
+	if len(cfg.Sources) == 0 {
+		t.Fatalf("expected sources to be populated automatically from ARK_BACKUP_DIR")
+	}
+
+	// 4. 验证是否包含根文件与子模块
+	hasRootFiles := false
+	hasDB := false
+	for _, s := range cfg.Sources {
+		if s.IsRootFiles() {
+			hasRootFiles = true
+		}
+		if s.ID == "db" {
+			hasDB = true
+		}
+	}
+	if !hasRootFiles {
+		t.Errorf("expected root_files to be detected from ARK_BACKUP_DIR")
+	}
+	if !hasDB {
+		t.Errorf("expected db subdir to be detected from ARK_BACKUP_DIR")
+	}
+
+	// 5. 验证 resolveBackupDir
+	resolved := resolveBackupDir(tempDir, "")
+	if resolved != mockBackupDir {
+		t.Errorf("expected resolved backup dir %s, got %s", mockBackupDir, resolved)
+	}
+}

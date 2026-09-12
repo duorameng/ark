@@ -44,6 +44,10 @@ const (
 	EnvArkPushRetry         = "ARK_PUSH_RETRY"
 	EnvArkCleanAfterPush    = "ARK_CLEAN_AFTER_PUSH"
 	EnvArkCleanAllAfterPush = "ARK_CLEAN_ALL_AFTER_PUSH"
+	EnvArkBackupDir         = "ARK_BACKUP_DIR"
+	EnvArkBackupPath        = "ARK_BACKUP_PATH"
+	EnvArkSourceDir         = "ARK_SOURCE_DIR"
+	EnvArkRestoreDir        = "ARK_RESTORE_DIR"
 	EnvGhToken              = "GH_TOKEN"
 	EnvGithubToken          = "GITHUB_TOKEN"
 )

@@ -122,65 +122,70 @@ func runCheck(args []string) {
 
 	// 3. 检查货舱舱位数据源 (Sources)
 	fmt.Println("\n3. 货舱舱位源审计 (Cargo Sources Audit):")
-	if cfg != nil {
-		if len(cfg.Sources) == 0 {
-			printWarn("货舱清单", "尚未配置任何 sources 货舱！可使用 'ark scan <目录>' 自动扫描生成。")
+	activeSources := make([]config.Source, 0)
+	if cfg != nil && len(cfg.Sources) > 0 {
+		activeSources = cfg.Sources
+	} else {
+		// 尝试读取来自 .env 的动态配置
+		if envSources := resolveBackupSourcesFromEnv(ws); len(envSources) > 0 {
+			activeSources = envSources
+			printPass("环境源", "已检测到 .env 中配置的备份数据源 (ARK_BACKUP_DIR)，免 config.json 即可直接运行")
+		}
+	}
+
+	if len(activeSources) == 0 {
+		if cfg == nil {
+			printWarn("货舱清单", "未找到 config.json 且 .env 未配置 ARK_BACKUP_DIR (提示: 可在 .env 中设置 ARK_BACKUP_DIR 或运行 'ark scan')")
 		} else {
-			seenIDs := make(map[string]bool)
-			for i, src := range cfg.Sources {
-				tagPrefix := fmt.Sprintf("源#%d[%s]", i+1, src.ID)
-				if src.ID == "" {
-					printFail(tagPrefix, "货舱 ID 为空，请配置唯一英文标识符")
-				} else if seenIDs[src.ID] {
-					printFail(tagPrefix, fmt.Sprintf("货舱 ID 重复: '%s'，ID 必须保持全局唯一", src.ID))
-				} else {
-					seenIDs[src.ID] = true
-				}
-
-				if src.Path == "" {
-					printFail(tagPrefix, "舱位路径 (path) 为空")
-					continue
-				}
-
-				absPath := src.Path
-				if !filepath.IsAbs(absPath) {
-					absPath = filepath.Join(ws, absPath)
-				}
-
-				stat, statErr := os.Stat(absPath)
-				if statErr != nil {
-					printFail(tagPrefix, fmt.Sprintf("物理路径不存在: %s (%s)", src.Path, absPath))
-				} else {
-					// 统计文件数和大致大小
-					var totalSize int64
-					var fileCount int
-					_ = filepath.WalkDir(absPath, func(p string, d fs.DirEntry, err error) error {
-						if err != nil {
-							return nil
-						}
-						fileCount++
-						if info, err := d.Info(); err == nil && !d.IsDir() {
-							totalSize += info.Size()
-						}
-						// 限制体检深度与采样量，避免超大目录卡顿
-						if fileCount > 50000 {
-							return filepath.SkipDir
-						}
-						return nil
-					})
-
-					typeStr := "目录"
-					if !stat.IsDir() {
-						typeStr = "单文件"
-					}
-					sizeMB := float64(totalSize) / 1024 / 1024
-					printPass(tagPrefix, fmt.Sprintf("物理存在 (%s) | 优先级:%d | 包含约 %d 项 (%.2f MB) -> %s",
-						typeStr, src.Priority, fileCount, sizeMB, src.Path))
-				}
-			}
+			printWarn("货舱清单", "尚未配置任何 sources 货舱！可在 .env 中设置 ARK_BACKUP_DIR 或使用 'ark scan <目录>' 自动生成")
 		}
 	} else {
-		printWarn("货舱清单", "因缺少有效 config.json，跳过 sources 检查")
+		seenIDs := make(map[string]bool)
+		for i, src := range activeSources {
+			tagPrefix := fmt.Sprintf("源#%d[%s]", i+1, src.ID)
+			if src.ID == "" {
+				printFail(tagPrefix, "货舱 ID 为空，请配置唯一英文标识符")
+			} else if seenIDs[src.ID] {
+				printFail(tagPrefix, fmt.Sprintf("货舱 ID 重复: '%s'，ID 必须保持全局唯一", src.ID))
+			} else {
+				seenIDs[src.ID] = true
+			}
+
+			if src.Path == "" {
+				printFail(tagPrefix, "舱位路径 (path) 为空")
+				continue
+			}
+
+			absPath := src.Path
+			if !filepath.IsAbs(absPath) {
+				absPath = filepath.Join(ws, absPath)
+			}
+
+			stat, err := os.Stat(absPath)
+			if err != nil {
+				printFail(tagPrefix, fmt.Sprintf("物理路径不存在或无权访问: %s", absPath))
+			} else {
+				fileCount := 0
+				var totalSize int64
+				_ = filepath.WalkDir(absPath, func(path string, d fs.DirEntry, err error) error {
+					if err == nil && !d.IsDir() {
+						fileCount++
+						if info, err := d.Info(); err == nil {
+							totalSize += info.Size()
+						}
+					}
+					return nil
+				})
+
+				typeStr := "目录"
+				if !stat.IsDir() {
+					typeStr = "单文件"
+				}
+				sizeMB := float64(totalSize) / 1024 / 1024
+				printPass(tagPrefix, fmt.Sprintf("物理存在 (%s) | 优先级:%d | 包含约 %d 项 (%.2f MB) -> %s",
+					typeStr, src.Priority, fileCount, sizeMB, src.Path))
+			}
+		}
 	}
 
 	// 4. 检查安全封条密钥与闭环加密自检
