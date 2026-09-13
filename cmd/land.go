@@ -10,6 +10,7 @@ import (
 
 	"ark/pkg/archive"
 	"ark/pkg/config"
+	"ark/pkg/oci"
 )
 
 func runLand(args []string) {
@@ -140,8 +141,12 @@ func runLand(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("✓ 成功获取清单，包含 %d 个货舱集装箱分层，开始流式调取与提取...\n", len(mf.Layers))
+	fmt.Printf("✓ 成功获取清单，包含 %d 个分层，开始流式调取与提取...\n", len(mf.Layers))
 	for idx, l := range mf.Layers {
+		if oci.IsCamouflageDigest(l.Digest) {
+			fmt.Printf("-> 识别到微服务伪装运行底座 [%d/%d] (指纹: %s...)，自动跳过还原\n", idx+1, len(mf.Layers), l.Digest[:19])
+			continue
+		}
 		fmt.Printf("-> 正在流式提取货舱分层 [%d/%d] (指纹: %s...)\n", idx+1, len(mf.Layers), l.Digest[:19])
 		if err := ociClient.DownloadBlobAndExtractCargo(ctx, l.Digest, tmpLandDir, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "[-] 提取货舱分层失败: %v\n", err)

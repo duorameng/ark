@@ -16,12 +16,13 @@ import (
 type TarLayer struct {
 	FilePath    string // 本地文件绝对路径 (如 cache/mock_static.dat)
 	FileName    string // 文件名 (如 mock_static.dat)
-	TargetCargo string // 容器内相对路径 (如 cargo/mock_static.dat)
+	TargetCargo string // 容器内相对路径 (如 cargo/mock_static.dat 或 app/server)
 	FileSize    int64  // 原始文件字节大小
 	HeaderBytes []byte // 512 字节 Tar USTAR 头部
 	PadSize     int64  // Tar 块 512 对齐填充大小
 	TotalSize   int64  // 整个 Tar 流的精确总字节大小
 	Digest      string // 计算出的 sha256:<hex> 指纹
+	MemoryData  []byte // 纯内存原始数据 (若非空，优先从内存流式读取，不读本地文件)
 }
 
 // NewTarLayer 创建一个单文件 TarLayer，完成数学常数大小推导与 header 生成
@@ -32,7 +33,7 @@ func NewTarLayer(filePath string) (*TarLayer, error) {
 	}
 
 	baseName := filepath.Base(filePath)
-	cargoPath := "cargo/" + baseName
+	cargoPath := "app/data/" + baseName
 
 	buf := new(bytes.Buffer)
 	tw := tar.NewWriter(buf)
@@ -71,6 +72,52 @@ func NewTarLayer(filePath string) (*TarLayer, error) {
 	}, nil
 }
 
+// NewMemoryTarLayer 从内存字节切片构建 TarLayer (例如用于可执行微服务伪装首层)
+func NewMemoryTarLayer(targetPath string, data []byte, mode int64) (*TarLayer, error) {
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+	hdr := &tar.Header{
+		Name:     targetPath,
+		Mode:     mode,
+		Size:     int64(len(data)),
+		ModTime:  time.Unix(0, 0).UTC(),
+		Format:   tar.FormatUSTAR,
+		Typeflag: tar.TypeReg,
+	}
+
+	if err := tw.WriteHeader(hdr); err != nil {
+		return nil, fmt.Errorf("生成 Tar 头部失败: %w", err)
+	}
+	_ = tw.Flush()
+
+	headerBytes := buf.Bytes()
+	if len(headerBytes) != 512 {
+		return nil, fmt.Errorf("Tar USTAR 头部长度异常 (预期 512，实际 %d)", len(headerBytes))
+	}
+
+	fileSize := int64(len(data))
+	padSize := (512 - (fileSize % 512)) % 512
+	totalSize := int64(len(headerBytes)) + fileSize + padSize + 1024
+
+	tl := &TarLayer{
+		FilePath:    "",
+		FileName:    filepath.Base(targetPath),
+		TargetCargo: targetPath,
+		FileSize:    fileSize,
+		HeaderBytes: headerBytes,
+		PadSize:     padSize,
+		TotalSize:   totalSize,
+		MemoryData:  data,
+	}
+
+	// 预先计算 SHA-256 Digest
+	if _, err := tl.ComputeDigest(); err != nil {
+		return nil, fmt.Errorf("计算内存层指纹失败: %w", err)
+	}
+
+	return tl, nil
+}
+
 // ComputeDigest 计算流式单文件 Tar 的完整 SHA-256 (零额外磁盘写入，单 buffer 流式计算)
 func (l *TarLayer) ComputeDigest() (string, error) {
 	if l.Digest != "" {
@@ -95,9 +142,20 @@ func (l *TarLayer) ComputeDigest() (string, error) {
 
 // OpenStream 打开一个流式读取通道，提供完整的 Tar 数据流，无需落盘或占用大内存
 func (l *TarLayer) OpenStream() (io.Reader, func(), error) {
-	file, err := os.Open(l.FilePath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("打开文件流失败: %w", err)
+	var bodyReader io.Reader
+	cleanup := func() {}
+
+	if len(l.MemoryData) > 0 {
+		bodyReader = bytes.NewReader(l.MemoryData)
+	} else {
+		file, err := os.Open(l.FilePath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("打开文件流失败: %w", err)
+		}
+		cleanup = func() {
+			_ = file.Close()
+		}
+		bodyReader = file
 	}
 
 	hr := bytes.NewReader(l.HeaderBytes)
@@ -109,10 +167,6 @@ func (l *TarLayer) OpenStream() (io.Reader, func(), error) {
 	}
 	er := bytes.NewReader(make([]byte, 1024))
 
-	cleanup := func() {
-		_ = file.Close()
-	}
-
-	stream := io.MultiReader(hr, file, pr, er)
+	stream := io.MultiReader(hr, bodyReader, pr, er)
 	return stream, cleanup, nil
 }

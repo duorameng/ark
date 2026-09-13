@@ -368,9 +368,11 @@ func (c *Client) DownloadBlobAndExtractCargo(ctx context.Context, digest, outDir
 			return fmt.Errorf("解析 Layer Tar 失败: %w", err)
 		}
 
-		// 仅提取 cargo/ 目录下的货物
+		// 仅提取 app/data/ (微服务数据目录) 或 cargo/ (旧版向后兼容) 目录下的货物
 		cleanName := filepath.Clean(hdr.Name)
-		if strings.HasPrefix(cleanName, "cargo") || strings.HasPrefix(cleanName, "cargo/") || strings.HasPrefix(cleanName, "cargo\\") {
+		isCargo := strings.HasPrefix(cleanName, "app/data") || strings.HasPrefix(cleanName, "app\\data") ||
+			strings.HasPrefix(cleanName, "cargo") || strings.HasPrefix(cleanName, "cargo/") || strings.HasPrefix(cleanName, "cargo\\")
+		if isCargo {
 			baseName := filepath.Base(cleanName)
 			destPath := filepath.Join(outDir, baseName)
 			f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)

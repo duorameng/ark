@@ -27,8 +27,8 @@ func TestTarLayer(t *testing.T) {
 	if layer.FileName != "test_file.dat" {
 		t.Errorf("期望 FileName 为 test_file.dat, 实际为 %s", layer.FileName)
 	}
-	if layer.TargetCargo != "cargo/test_file.dat" {
-		t.Errorf("期望 TargetCargo 为 cargo/test_file.dat, 实际为 %s", layer.TargetCargo)
+	if layer.TargetCargo != "app/data/test_file.dat" {
+		t.Errorf("期望 TargetCargo 为 app/data/test_file.dat, 实际为 %s", layer.TargetCargo)
 	}
 
 	digest, err := layer.ComputeDigest()
@@ -68,8 +68,8 @@ func TestTarLayer(t *testing.T) {
 		t.Fatalf("tar.Reader.Next 失败: %v", err)
 	}
 
-	if hdr.Name != "cargo/test_file.dat" {
-		t.Errorf("解包文件名期望 cargo/test_file.dat, 实际 %s", hdr.Name)
+	if hdr.Name != "app/data/test_file.dat" {
+		t.Errorf("解包文件名期望 app/data/test_file.dat, 实际 %s", hdr.Name)
 	}
 	if hdr.Size != int64(len(testData)) {
 		t.Errorf("解包大小期望 %d, 实际 %d", len(testData), hdr.Size)
@@ -89,3 +89,70 @@ func TestTarLayer(t *testing.T) {
 		t.Errorf("期望 EOF, 实际为 %v", err)
 	}
 }
+
+func TestNewMemoryTarLayer(t *testing.T) {
+	testData := []byte("#!/bin/sh\necho hello microservice")
+	targetPath := "app/server"
+
+	layer, err := NewMemoryTarLayer(targetPath, testData, 0755)
+	if err != nil {
+		t.Fatalf("NewMemoryTarLayer 失败: %v", err)
+	}
+
+	if layer.FileName != "server" {
+		t.Errorf("期望 FileName 为 server, 实际为 %s", layer.FileName)
+	}
+	if layer.TargetCargo != "app/server" {
+		t.Errorf("期望 TargetCargo 为 app/server, 实际为 %s", layer.TargetCargo)
+	}
+	if layer.Digest == "" {
+		t.Errorf("期望 Digest 自动计算完成，实际为空")
+	}
+
+	stream, cleanup, err := layer.OpenStream()
+	if err != nil {
+		t.Fatalf("OpenStream 失败: %v", err)
+	}
+	defer cleanup()
+
+	var buf bytes.Buffer
+	n, err := io.Copy(&buf, stream)
+	if err != nil {
+		t.Fatalf("读取 stream 失败: %v", err)
+	}
+
+	if n != layer.TotalSize {
+		t.Errorf("读取字节数 %d 与 TotalSize %d 不符", n, layer.TotalSize)
+	}
+
+	// 验证 Tar 结构
+	tr := tar.NewReader(&buf)
+	hdr, err := tr.Next()
+	if err != nil {
+		t.Fatalf("tar.Reader.Next 失败: %v", err)
+	}
+
+	if hdr.Name != "app/server" {
+		t.Errorf("解包文件名期望 app/server, 实际 %s", hdr.Name)
+	}
+	if hdr.Mode != 0755 {
+		t.Errorf("解包权限期望 0755, 实际 %o", hdr.Mode)
+	}
+	if hdr.Size != int64(len(testData)) {
+		t.Errorf("解包大小期望 %d, 实际 %d", len(testData), hdr.Size)
+	}
+
+	content, err := io.ReadAll(tr)
+	if err != nil {
+		t.Fatalf("读取解包数据失败: %v", err)
+	}
+	if !bytes.Equal(content, testData) {
+		t.Errorf("解包内容与测试数据不一致")
+	}
+
+	_, err = tr.Next()
+	if err != io.EOF {
+		t.Errorf("期望 EOF, 实际为 %v", err)
+	}
+}
+

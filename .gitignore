@@ -11,6 +11,7 @@ logs/
 *.age
 *.tar
 *.gz
+!pkg/oci/assets/*.gz
 *.enc
 *.dat
 

@@ -353,24 +353,39 @@ func runBoard(args []string, dryRun bool) {
 		_ = os.WriteFile(manifestPath, mData, 0644)
 	}
 
+	// 准备双架构可运行微服务伪装首层 (Executable Camouflage Base Layer)
+	camoAMD, err := oci.GetCamouflageLayer("amd64")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[-] 准备 AMD64 伪装首层失败: %v\n", err)
+		os.Exit(1)
+	}
+	camoARM, err := oci.GetCamouflageLayer("arm64")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[-] 准备 ARM64 伪装首层失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	amd64Layers := append([]*oci.TarLayer{camoAMD}, tarLayers...)
+	arm64Layers := append([]*oci.TarLayer{camoARM}, tarLayers...)
+
 	// 生成双架构 (linux/amd64 + linux/arm64) 构型信息
-	cfgBytesAMD, cfgDigestAMD, cfgSizeAMD, err := oci.GenerateArchConfigJSON("amd64", tarLayers)
+	cfgBytesAMD, cfgDigestAMD, cfgSizeAMD, err := oci.GenerateArchConfigJSON("amd64", amd64Layers)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] 生成 AMD64 Config 失败: %v\n", err)
 		os.Exit(1)
 	}
-	mfBytesAMD, mfDigestAMD, mfSizeAMD, err := oci.GenerateManifestJSON(cfgDigestAMD, cfgSizeAMD, tarLayers, true)
+	mfBytesAMD, mfDigestAMD, mfSizeAMD, err := oci.GenerateManifestJSON(cfgDigestAMD, cfgSizeAMD, amd64Layers, true)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] 生成 AMD64 Manifest 失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	cfgBytesARM, cfgDigestARM, cfgSizeARM, err := oci.GenerateArchConfigJSON("arm64", tarLayers)
+	cfgBytesARM, cfgDigestARM, cfgSizeARM, err := oci.GenerateArchConfigJSON("arm64", arm64Layers)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] 生成 ARM64 Config 失败: %v\n", err)
 		os.Exit(1)
 	}
-	mfBytesARM, mfDigestARM, mfSizeARM, err := oci.GenerateManifestJSON(cfgDigestARM, cfgSizeARM, tarLayers, true)
+	mfBytesARM, mfDigestARM, mfSizeARM, err := oci.GenerateManifestJSON(cfgDigestARM, cfgSizeARM, arm64Layers, true)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] 生成 ARM64 Manifest 失败: %v\n", err)
 		os.Exit(1)
@@ -406,12 +421,14 @@ func runBoard(args []string, dryRun bool) {
 	for _, l := range tarLayers {
 		totCargoSize += l.TotalSize
 	}
-	fmt.Printf("  • 装载构型就绪: 共 %d 个分层 (总载重: %s | 支持 linux/amd64 + linux/arm64 双架构)\n", len(tarLayers), formatBytes(totCargoSize))
+	fmt.Printf("  • 装载构型就绪: 共 %d 个业务货舱 (总载重: %s | 内置 linux/amd64 + linux/arm64 可运行微服务底座)\n", len(tarLayers), formatBytes(totCargoSize))
 
 	if dryRun {
 		fmt.Println("[DRY RUN] 模拟登船完毕，跳过实际航行与推送。")
 		return
 	}
+
+	allPushLayers := append([]*oci.TarLayer{camoAMD, camoARM}, tarLayers...)
 
 	ctx := context.Background()
 	for tIdx, target := range targets {
@@ -421,7 +438,7 @@ func runBoard(args []string, dryRun bool) {
 		}
 
 		err := pushSingleTarget(
-			ctx, target, tag, tarLayers,
+			ctx, target, tag, allPushLayers,
 			cfgDigestAMD, cfgBytesAMD,
 			cfgDigestARM, cfgBytesARM,
 			mfDigestAMD, mfBytesAMD,

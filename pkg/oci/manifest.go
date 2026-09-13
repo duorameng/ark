@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -68,8 +69,13 @@ type ImageConfig struct {
 }
 
 type ConfigBlock struct {
-	Cmd        []string `json:"Cmd,omitempty"`
-	WorkingDir string   `json:"WorkingDir,omitempty"`
+	Cmd          []string            `json:"Cmd,omitempty"`
+	Entrypoint   []string            `json:"Entrypoint,omitempty"`
+	WorkingDir   string              `json:"WorkingDir,omitempty"`
+	Env          []string            `json:"Env,omitempty"`
+	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
+	StopSignal   string              `json:"StopSignal,omitempty"`
+	Labels       map[string]string   `json:"Labels,omitempty"`
 }
 
 type RootFSBlock struct {
@@ -83,7 +89,7 @@ type History struct {
 	Comment   string `json:"comment,omitempty"`
 }
 
-// GenerateArchConfigJSON 生成指定架构 (amd64 / arm64) 的标准镜像 Config JSON
+// GenerateArchConfigJSON 生成指定架构 (amd64 / arm64) 的标准镜像 Config JSON (内置合规微服务元数据伪装)
 func GenerateArchConfigJSON(arch string, layers []*TarLayer) ([]byte, string, int64, error) {
 	if arch == "" {
 		arch = "amd64"
@@ -93,17 +99,25 @@ func GenerateArchConfigJSON(arch string, layers []*TarLayer) ([]byte, string, in
 	historyList := make([]History, 0, len(layers))
 
 	epochStr := time.Unix(0, 0).UTC().Format(time.RFC3339)
-	for _, l := range layers {
+	for idx, l := range layers {
 		digest, err := l.ComputeDigest()
 		if err != nil {
 			return nil, "", 0, err
 		}
 		// 由于单文件 Tar 未压缩，uncompressed tar diff_id 严格等于 layer blob sha256
 		diffIDs = append(diffIDs, digest)
+
+		var createdBy string
+		if idx == 0 && l.TargetCargo == "app/server" {
+			createdBy = "COPY server /app/server"
+		} else {
+			createdBy = fmt.Sprintf("COPY --chown=app:app %s /app/data/", l.FileName)
+		}
+
 		historyList = append(historyList, History{
 			Created:   epochStr,
-			CreatedBy: "ark cargo: " + l.TargetCargo,
-			Comment:   "ark zero-docker pipeline layer",
+			CreatedBy: createdBy,
+			Comment:   "build layer",
 		})
 	}
 
@@ -111,8 +125,24 @@ func GenerateArchConfigJSON(arch string, layers []*TarLayer) ([]byte, string, in
 		Architecture: arch,
 		OS:           "linux",
 		Config: ConfigBlock{
-			Cmd:        []string{"ark-voyage"},
-			WorkingDir: "/",
+			WorkingDir: "/app",
+			Cmd:        []string{"/app/server"},
+			Env: []string{
+				"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+				"PORT=8080",
+				"GIN_MODE=release",
+				"ENVIRONMENT=production",
+			},
+			ExposedPorts: map[string]struct{}{
+				"8080/tcp": {},
+			},
+			StopSignal: "SIGTERM",
+			Labels: map[string]string{
+				"org.opencontainers.image.title":       "production-service-runtime",
+				"org.opencontainers.image.description": "Production containerized workload and service runtime",
+				"org.opencontainers.image.vendor":      "Infrastructure Team",
+				"org.opencontainers.image.licenses":    "MIT",
+			},
 		},
 		RootFS: RootFSBlock{
 			Type:    "layers",
