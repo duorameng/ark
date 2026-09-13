@@ -284,7 +284,9 @@ func runBoard(args []string, dryRun bool) {
 					configPath := filepath.Join(ws, config.ConfigFileName)
 					_ = cfg.Save(configPath)
 				}
-				fmt.Printf("✓ [自动扫描] 发现 %d 个货舱舱位 (已应用排除规则)，已动态更新清单\n", len(cfg.Sources))
+				fmt.Printf("✓ [自动扫描] 发现 %d 个货舱舱位 (已应用排除规则)，已动态更新清单:\n", len(cfg.Sources))
+				scanner.PrintScanSummary(results)
+				fmt.Println()
 			}
 		}
 	}
