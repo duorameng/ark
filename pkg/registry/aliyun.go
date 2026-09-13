@@ -43,12 +43,8 @@ func (a *AliyunProvider) ListVersions(ctx context.Context, categoryFilter string
 
 // MaintainQuota 执行阿里云 ACR 配额与生命周期策略维护 (支持固定 Tag 覆盖与控制台策略提示)
 func (a *AliyunProvider) MaintainQuota(ctx context.Context, category string, retentionCount int, tag string, isFixedTag bool) error {
-	fmt.Printf("\n------------------- 阿里云 ACR 配额与生命周期维护 (%s) -------------------\n", a.Host())
-	fmt.Printf("✓ 航次已成功推送至 %s (%s)\n", a.DisplayName(), a.Repository())
 	if isFixedTag {
-		fmt.Printf("✓ 当前采用固定 Tag 覆盖模式 (%s)，已自动覆写上一航次，远端仓库始终保持最新单版本。\n", tag)
-	} else {
-		fmt.Println("💡 提示: 针对阿里云 ACR 个人版等无生命周期自动清理的环境，可使用固定 Tag 覆盖模式 (如 ark board --latest 或配置 ARK_TAG=latest) 实现自动覆写，免手动清理。")
+		fmt.Printf("  ✓ 固定 Tag 覆盖模式: 远端保持最新单版本 (%s)\n", tag)
 	}
 	return nil
 }

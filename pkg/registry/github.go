@@ -57,27 +57,20 @@ func (g *GitHubProvider) ListVersions(ctx context.Context, categoryFilter string
 
 // MaintainQuota 执行 GitHub 历史版本淘汰与悬空 Untagged 清理
 func (g *GitHubProvider) MaintainQuota(ctx context.Context, category string, retentionCount int, tag string, isFixedTag bool) error {
-	fmt.Printf("\n------------------- 正在维护 [%s] 分类的历史航次配额 (%s) -------------------\n", category, g.DisplayName())
 	if g.password == "" {
-		fmt.Println("未提供通行凭据，跳过远端航次轮转与 untagged 清理维护。")
 		return nil
 	}
 
 	if isFixedTag {
-		fmt.Printf("✓ 当前采用固定 Tag 覆盖模式 (%s)，正在维护历史版本指针...\n", tag)
+		fmt.Printf("  ✓ 固定 Tag 覆盖模式: 维护历史版本指针 (%s)\n", tag)
 	} else if retentionCount > 0 {
-		fmt.Printf("-> 正在按配额清理超出保留数 (%d 个) 的旧版本...\n", retentionCount)
+		fmt.Printf("  -> 正在维护历史版本配额 (保留最新 %d 个航次)...\n", retentionCount)
 		_ = g.ghClient.PruneCategoryVersions(category, retentionCount)
 	}
 
-	fmt.Println("-> 正在顺带扫描并清理远端未打标孤立版本 (Untagged Versions)...")
 	deletedUntagged, errUntagged := g.ghClient.PruneUntaggedVersions()
-	if errUntagged != nil {
-		fmt.Printf("   [-] 清理远端未打标版本提示: %v\n", errUntagged)
-	} else if deletedUntagged > 0 {
-		fmt.Printf("   ✓ 顺带成功清理了 %d 个远端孤立 untagged 版本！\n", deletedUntagged)
-	} else {
-		fmt.Println("   ✓ 远端未发现任何孤立 untagged 版本，状态清洁。")
+	if errUntagged == nil && deletedUntagged > 0 {
+		fmt.Printf("  ✓ 顺带清理了 %d 个远端孤立 untagged 版本\n", deletedUntagged)
 	}
 	return nil
 }

@@ -121,12 +121,8 @@ func (b *BaseProvider) ListVersions(ctx context.Context, categoryFilter string) 
 
 // MaintainQuota 标准 OCI 通用行为：输出配额维护与固定 Tag 覆盖指引
 func (b *BaseProvider) MaintainQuota(ctx context.Context, category string, retentionCount int, tag string, isFixedTag bool) error {
-	fmt.Printf("\n------------------- 通用 OCI 注册表配额管理 (%s) -------------------\n", b.Host())
-	fmt.Printf("✓ 航次已成功推送至 %s (%s)\n", b.DisplayName(), b.Repository())
 	if isFixedTag {
-		fmt.Printf("✓ 当前采用固定 Tag 覆盖模式 (%s)，已自动覆写上一航次，远端仓库始终保持最新单版本。\n", tag)
-	} else {
-		fmt.Printf("💡 提示: 针对 %s 等环境，建议使用固定 Tag 覆盖模式 (如 ark board --latest) 实现自动覆写，免手动清理。\n", b.DisplayName())
+		fmt.Printf("  ✓ 固定 Tag 覆盖模式: 远端保持最新单版本 (%s)\n", tag)
 	}
 	return nil
 }
