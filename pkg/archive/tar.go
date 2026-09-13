@@ -69,10 +69,41 @@ func WalkAndWriteFilesOnlyTar(srcDir string, tw *tar.Writer) error {
 		if err != nil {
 			return err
 		}
-		_, copyErr := io.CopyBuffer(tw, f, copyBuf)
+		copyErr := copyFileToTar(tw, f, hdr.Size, copyBuf)
 		f.Close()
 		if copyErr != nil {
 			return copyErr
+		}
+	}
+	return nil
+}
+
+// copyFileToTar 安全地将文件内容流式写入 tar.Writer
+// 针对正在被动态追加写入的文件（如数据库 redo/undo log、binlog、运行中服务日志等）：
+// 1. 使用 io.LimitReader 严格限制最大写入字节数为 targetSize，彻底杜绝 "archive/tar: write too long" 报错；
+// 2. 若文件在此期间被截断导致实际读取字节数不足 targetSize，自动以 0 字节填补差额，确保 Tar entry 长度与分块严格对齐。
+func copyFileToTar(tw *tar.Writer, f io.Reader, targetSize int64, copyBuf []byte) error {
+	if targetSize <= 0 {
+		return nil
+	}
+	limitedReader := io.LimitReader(f, targetSize)
+	n, err := io.CopyBuffer(tw, limitedReader, copyBuf)
+	if err != nil {
+		return err
+	}
+	if n < targetSize {
+		remaining := targetSize - n
+		var zeroBuf [32 * 1024]byte
+		for remaining > 0 {
+			toWrite := int64(len(zeroBuf))
+			if toWrite > remaining {
+				toWrite = remaining
+			}
+			written, err := tw.Write(zeroBuf[:toWrite])
+			if err != nil {
+				return err
+			}
+			remaining -= int64(written)
 		}
 	}
 	return nil
@@ -102,7 +133,7 @@ func WalkAndWriteTar(srcDir string, tw *tar.Writer) error {
 		if err != nil {
 			return err
 		}
-		_, err = io.CopyBuffer(tw, f, copyBuf)
+		err = copyFileToTar(tw, f, hdr.Size, copyBuf)
 		f.Close()
 		return err
 	}
@@ -161,7 +192,7 @@ func WalkAndWriteTar(srcDir string, tw *tar.Writer) error {
 		if err != nil {
 			return err
 		}
-		_, copyErr := io.CopyBuffer(tw, f, copyBuf)
+		copyErr := copyFileToTar(tw, f, hdr.Size, copyBuf)
 		f.Close()
 		return copyErr
 	})

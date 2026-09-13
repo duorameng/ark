@@ -1,8 +1,10 @@
 package archive
 
 import (
+	"archive/tar"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -181,6 +183,51 @@ func TestPackAndSealWithProgress(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(unpackDir, "test.dat"))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("content corrupted after progress-tracked pack/unpack")
+	}
+}
+
+func TestWriteTooLongProtection(t *testing.T) {
+	// 测试当底层数据流大于声明的 targetSize 时 (模拟 MySQL 在打包瞬间追加数据)，copyFileToTar 绝不报错
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	targetSize := int64(100)
+	hdr := &tar.Header{
+		Name:     "mysql/ibdata1",
+		Mode:     0644,
+		Size:     targetSize,
+		Typeflag: tar.TypeReg,
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatalf("WriteHeader failed: %v", err)
+	}
+
+	// 准备 500 字节数据 (远大于 targetSize 100 字节)
+	overflowData := bytes.Repeat([]byte("A"), 500)
+	r := bytes.NewReader(overflowData)
+	copyBuf := make([]byte, 1024)
+
+	// 原生如果不加 LimitReader 直接 CopyBuffer 会触发 "archive/tar: write too long"
+	if err := copyFileToTar(tw, r, targetSize, copyBuf); err != nil {
+		t.Fatalf("copyFileToTar should NOT return error when file grows dynamically: %v", err)
+	}
+
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tw.Close failed: %v", err)
+	}
+
+	// 验证解包后刚好是 100 字节
+	tr := tar.NewReader(&buf)
+	h, err := tr.Next()
+	if err != nil {
+		t.Fatalf("tr.Next failed: %v", err)
+	}
+	if h.Size != targetSize {
+		t.Fatalf("expected size %d, got %d", targetSize, h.Size)
+	}
+	readBack, _ := io.ReadAll(tr)
+	if int64(len(readBack)) != targetSize {
+		t.Fatalf("expected %d bytes, got %d", targetSize, len(readBack))
 	}
 }
 
