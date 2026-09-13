@@ -41,20 +41,32 @@ type TokenResponse struct {
 
 // GetTokenForScope 获取满足特定 scope 的有效 Bearer Token
 func (a *AuthManager) GetTokenForScope(ctx context.Context, realm, service, scope string) (string, error) {
+	return a.getTokenInternal(ctx, realm, service, scope, false)
+}
+
+// GetFreshTokenForScope 强制向鉴权服务器获取最新的 Bearer Token (遇到 401 挑战重试时使用)
+func (a *AuthManager) GetFreshTokenForScope(ctx context.Context, realm, service, scope string) (string, error) {
+	return a.getTokenInternal(ctx, realm, service, scope, true)
+}
+
+func (a *AuthManager) getTokenInternal(ctx context.Context, realm, service, scope string, forceRefresh bool) (string, error) {
 	cacheKey := fmt.Sprintf("%s|%s|%s", realm, service, scope)
-	a.mu.RLock()
-	if tok, ok := a.tokenCache[cacheKey]; ok && tok != "" {
+	if !forceRefresh {
+		a.mu.RLock()
+		if tok, ok := a.tokenCache[cacheKey]; ok && tok != "" {
+			a.mu.RUnlock()
+			return tok, nil
+		}
 		a.mu.RUnlock()
-		return tok, nil
 	}
-	a.mu.RUnlock()
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Double check
-	if tok, ok := a.tokenCache[cacheKey]; ok && tok != "" {
-		return tok, nil
+	if !forceRefresh {
+		if tok, ok := a.tokenCache[cacheKey]; ok && tok != "" {
+			return tok, nil
+		}
 	}
 
 	u, err := url.Parse(realm)
@@ -114,26 +126,69 @@ func (a *AuthManager) GetTokenForScope(ctx context.Context, realm, service, scop
 	return token, nil
 }
 
-// GetCachedTokenForScope 查找与 scope 匹配的已有有效缓存 Token
+// GetCachedTokenForScope 查找与 scope 匹配且能满足权限动作的已有有效缓存 Token
 func (a *AuthManager) GetCachedTokenForScope(scope string) string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
+	// 1. 优先严格匹配
 	for k, v := range a.tokenCache {
-		if strings.HasSuffix(k, "|"+scope) {
+		parts := strings.SplitN(k, "|", 3)
+		if len(parts) == 3 && parts[2] == scope && v != "" {
 			return v
 		}
 	}
-	// 若无严格后缀匹配，且缓存中存在单一 token，优先复用
-	for _, v := range a.tokenCache {
-		if v != "" {
-			return v
+
+	// 2. 检查是否有权限超集能满足当前请求 (例如 cached 具备 pull,push，可满足 pull 或 push,pull 请求)
+	for k, v := range a.tokenCache {
+		parts := strings.SplitN(k, "|", 3)
+		if len(parts) == 3 && v != "" {
+			if ScopeSatisfies(parts[2], scope) {
+				return v
+			}
 		}
 	}
+
 	return ""
 }
 
+// ScopeSatisfies 校验 cachedScope 是否能够涵盖 requiredScope 所需的权限动作
+func ScopeSatisfies(cachedScope, requiredScope string) bool {
+	if cachedScope == requiredScope {
+		return true
+	}
+	if requiredScope == "" {
+		return true
+	}
+
+	cParts := strings.Split(cachedScope, ":")
+	rParts := strings.Split(requiredScope, ":")
+	if len(cParts) < 3 || len(rParts) < 3 {
+		return false
+	}
+	// 资源类型 (如 repository) 和资源路径 (如 engigu/ark) 必须完全一致
+	if cParts[0] != rParts[0] || cParts[1] != rParts[1] {
+		return false
+	}
+
+	// 校验缓存的 action 集合是否包含所需 action
+	cachedActions := strings.Split(cParts[2], ",")
+	actionMap := make(map[string]bool, len(cachedActions))
+	for _, act := range cachedActions {
+		actionMap[strings.TrimSpace(act)] = true
+	}
+
+	for _, reqAct := range strings.Split(rParts[2], ",") {
+		if !actionMap[strings.TrimSpace(reqAct)] {
+			return false
+		}
+	}
+
+	return true
+}
+
 // ParseWwwAuthenticate 解析 401 响应的 Www-Authenticate: Bearer 头
+// 严谨遵循 RFC 7235 / RFC 6750 规范，基于双引号状态机解析，避免将 scope="repository:x:pull,push" 内部的逗号误切
 func ParseWwwAuthenticate(header string) (realm, service, scope string) {
 	header = strings.TrimSpace(header)
 	if !strings.HasPrefix(header, "Bearer ") {
@@ -141,23 +196,47 @@ func ParseWwwAuthenticate(header string) (realm, service, scope string) {
 	}
 
 	header = strings.TrimPrefix(header, "Bearer ")
-	parts := strings.Split(header, ",")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		kv := strings.SplitN(part, "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(kv[0]))
-		val := strings.Trim(strings.TrimSpace(kv[1]), "\"")
-		switch key {
-		case "realm":
-			realm = val
-		case "service":
-			service = val
-		case "scope":
-			scope = val
+
+	var currentKey, currentVal strings.Builder
+	inKey := true
+	inQuote := false
+
+	for i := 0; i < len(header); i++ {
+		ch := header[i]
+		if inKey {
+			if ch == '=' {
+				inKey = false
+			} else if ch != ' ' && ch != '\t' {
+				currentKey.WriteByte(ch)
+			}
+		} else {
+			if ch == '"' {
+				inQuote = !inQuote
+			} else if ch == ',' && !inQuote {
+				assignAuthParam(currentKey.String(), currentVal.String(), &realm, &service, &scope)
+				currentKey.Reset()
+				currentVal.Reset()
+				inKey = true
+			} else {
+				currentVal.WriteByte(ch)
+			}
 		}
 	}
+	if currentKey.Len() > 0 {
+		assignAuthParam(currentKey.String(), currentVal.String(), &realm, &service, &scope)
+	}
 	return
+}
+
+func assignAuthParam(k, v string, realm, service, scope *string) {
+	k = strings.ToLower(strings.TrimSpace(k))
+	v = strings.Trim(strings.TrimSpace(v), "\"")
+	switch k {
+	case "realm":
+		*realm = v
+	case "service":
+		*service = v
+	case "scope":
+		*scope = v
+	}
 }

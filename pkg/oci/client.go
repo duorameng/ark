@@ -139,7 +139,7 @@ func (c *Client) doRequest(ctx context.Context, req *http.Request, defaultScope 
 		scope = defaultScope
 	}
 
-	token, err := c.Auth.GetTokenForScope(ctx, realm, service, scope)
+	token, err := c.Auth.GetFreshTokenForScope(ctx, realm, service, scope)
 	if err != nil {
 		return nil, fmt.Errorf("鉴权协商失败: %w", err)
 	}
