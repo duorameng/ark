@@ -19,6 +19,8 @@ func runLand(args []string) {
 	cleanedArgs, cliTarget := extractTargetFlag(cleanedArgs)
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
 	cleanedArgs, cliDest := extractDestFlag(cleanedArgs)
+	cleanedArgs, cliTag := extractTagFlag(cleanedArgs)
+	cleanedArgs, cliCategory := extractCategoryFlag(cleanedArgs)
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
@@ -34,6 +36,9 @@ func runLand(args []string) {
 	cfg.Repository = activeTarget.Repository
 
 	category := cfg.Category
+	if cliCategory != "" {
+		category = cliCategory
+	}
 	var tag string
 	destDir := ""
 
@@ -44,12 +49,34 @@ func runLand(args []string) {
 		}
 	}
 
-	if len(args) > 0 {
+	if cliTag != "" {
+		if strings.Contains(cliTag, ":") {
+			parts := strings.SplitN(cliTag, ":", 2)
+			if parts[0] != "" {
+				cfg.Repository = parts[0]
+			}
+			cliTag = parts[1]
+		}
+		cliTag = strings.TrimPrefix(cliTag, ":")
+		tag = cliTag
+		if cliCategory == "" {
+			if strings.Contains(tag, "-") {
+				category = strings.SplitN(tag, "-", 2)[0]
+			} else {
+				category = tag
+			}
+		}
+	}
+
+	explicitCustomTag := ""
+	if tag == "" && len(args) > 0 {
 		param := args[0]
 		// 支持直接输入完整镜像名+标签 (例如 ghcr.io/org/repo:category-20260912-120000 或 :latest)
 		if strings.Contains(param, ":") {
 			parts := strings.SplitN(param, ":", 2)
-			cfg.Repository = parts[0]
+			if parts[0] != "" {
+				cfg.Repository = parts[0]
+			}
 			param = parts[1]
 		}
 		if strings.EqualFold(param, "latest") || strings.EqualFold(param, "fixed") {
@@ -64,6 +91,7 @@ func runLand(args []string) {
 			}
 		} else if !strings.HasPrefix(param, "-") {
 			category = param
+			explicitCustomTag = param
 		}
 	}
 
@@ -83,9 +111,16 @@ func runLand(args []string) {
 	// 若未显式指定具体时间戳航次时，委托 Provider 智能解析最新航次：
 	if tag == "" {
 		fmt.Printf("[航次] 正在查询分类 [%s] 在远端港口的目标航次...\n", category)
-		if latestTag, err := provider.ResolveLatestTag(ctx, category); err == nil && latestTag != "" {
+		latestTag, err := provider.ResolveLatestTag(ctx, category)
+		if err == nil && latestTag != "" && latestTag != "latest" {
 			tag = latestTag
 			fmt.Printf("[航次] 自动定位最新航次: %s\n", tag)
+		} else if explicitCustomTag != "" {
+			tag = explicitCustomTag
+			fmt.Printf("[航次] 匹配指定航次标签: %s\n", tag)
+		} else if latestTag != "" {
+			tag = latestTag
+			fmt.Printf("[航次] 调取最新航次标签: %s\n", tag)
 		} else {
 			tag = "latest"
 			fmt.Printf("[航次] 未检索到时间戳历史航次，调取固定最新标签: %s\n", tag)

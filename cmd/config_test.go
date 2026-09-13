@@ -87,6 +87,14 @@ func TestExtractFlags(t *testing.T) {
 	if engine != "docker" {
 		t.Errorf("expected engine docker, got: %s", engine)
 	}
+	cleanedWithTag, tag1 := extractTagFlag([]string{"--tag=vmArmBox", "-o", "/data/test1"})
+	if tag1 != "vmArmBox" || len(cleanedWithTag) != 2 {
+		t.Errorf("expected tag vmArmBox, got %s, remaining: %v", tag1, cleanedWithTag)
+	}
+	cleanedWithTag2, tag2 := extractTagFlag([]string{"--tag", "nd3-20260913", "-o", "/data/test1"})
+	if tag2 != "nd3-20260913" || len(cleanedWithTag2) != 2 {
+		t.Errorf("expected tag nd3-20260913, got %s, remaining: %v", tag2, cleanedWithTag2)
+	}
 	expectedArgs := []string{"land", "vps", "dest"}
 	if len(cleaned) != len(expectedArgs) {
 		t.Fatalf("cleaned args length mismatch: got %v", cleaned)
@@ -357,6 +365,63 @@ func TestParseEnvValue(t *testing.T) {
 		got := parseEnvValue(tt.input)
 		if got != tt.expected {
 			t.Errorf("parseEnvValue(%q) = %q, expected %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestUnifiedTagFlagsAcrossCommands(t *testing.T) {
+	// 验证 extractTagFlag 统一处理
+	cases := []struct {
+		args        []string
+		expectedTag string
+		remainLen   int
+	}{
+		{[]string{"--tag=vmArmBox", "-o", "/data/test1"}, "vmArmBox", 2},
+		{[]string{"--tag", "vmArmBox", "-o", "/data/test1"}, "vmArmBox", 2},
+		{[]string{"-t=vmArmBox", "-o", "/data/test1"}, "vmArmBox", 2},
+		{[]string{"-t", "vmArmBox", "-o", "/data/test1"}, "vmArmBox", 2},
+		{[]string{"vmArmBox", "-o", "/data/test1"}, "", 3},
+	}
+
+	for i, c := range cases {
+		cleaned, tag := extractTagFlag(c.args)
+		if tag != c.expectedTag {
+			t.Errorf("case %d: expected tag %q, got %q", i, c.expectedTag, tag)
+		}
+		if len(cleaned) != c.remainLen {
+			t.Errorf("case %d: expected %d remaining args, got %d: %v", i, c.remainLen, len(cleaned), cleaned)
+		}
+	}
+
+	// 验证 board 下 -t 和 --tag 一致性
+	cfg := &config.Config{Category: "vps"}
+	tagA, catA, _, _, _, _ := parseBoardFlags(cfg, []string{"-t", "vmArmBox"})
+	tagB, catB, _, _, _, _ := parseBoardFlags(cfg, []string{"--tag=vmArmBox"})
+	if tagA != "vmArmBox" || tagB != "vmArmBox" || catA != catB {
+		t.Errorf("board tag parsing inconsistent: -t gives %s/%s, --tag gives %s/%s", tagA, catA, tagB, catB)
+	}
+
+	// 验证 board 下 -c 和 --category 一致性
+	tagC, catC, _, _, _, _ := parseBoardFlags(cfg, []string{"-c", "web", "--day"})
+	tagD, catD, _, _, _, _ := parseBoardFlags(cfg, []string{"--category=web", "--day"})
+	if catC != "web" || catD != "web" || tagC != tagD {
+		t.Errorf("board category parsing inconsistent: -c gives %s/%s, --category gives %s/%s", tagC, catC, tagD, catD)
+	}
+
+	// 验证 extractCategoryFlag
+	catCases := []struct {
+		args     []string
+		expected string
+	}{
+		{[]string{"--category=mycat", "-o", "/dest"}, "mycat"},
+		{[]string{"--category", "mycat", "-o", "/dest"}, "mycat"},
+		{[]string{"-c=mycat", "-o", "/dest"}, "mycat"},
+		{[]string{"-c", "mycat", "-o", "/dest"}, "mycat"},
+	}
+	for i, cc := range catCases {
+		_, cat := extractCategoryFlag(cc.args)
+		if cat != cc.expected {
+			t.Errorf("catCase %d: expected %q, got %q", i, cc.expected, cat)
 		}
 	}
 }

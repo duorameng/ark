@@ -20,6 +20,8 @@ func runCheck(args []string) {
 	cleanedArgs, cliKey := extractKeyFlag(args)
 	cleanedArgs, cliTarget := extractTargetFlag(cleanedArgs)
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
+	cleanedArgs, _ = extractTagFlag(cleanedArgs)
+	cleanedArgs, _ = extractCategoryFlag(cleanedArgs)
 	_ = cleanedArgs
 
 	ws := getWorkspaceRoot()

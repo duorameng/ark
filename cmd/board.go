@@ -70,14 +70,16 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 		case arg == "--no-clean" || arg == "--keep-cache":
 			shouldClean = false
 			cleanAll = false
-		case arg == "--tag":
+		case arg == "--tag" || arg == "-t":
 			if i+1 < len(args) {
 				explicitTag = args[i+1]
 				i++
 			}
 		case strings.HasPrefix(arg, "--tag="):
 			explicitTag = strings.TrimPrefix(arg, "--tag=")
-		case arg == "--precision" || arg == "-p" || arg == "--time-format" || arg == "-t":
+		case strings.HasPrefix(arg, "-t="):
+			explicitTag = strings.TrimPrefix(arg, "-t=")
+		case arg == "--precision" || arg == "-p" || arg == "--time-format":
 			if i+1 < len(args) {
 				precision = args[i+1]
 				i++
@@ -118,6 +120,15 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "--retention=")); err == nil && v > 0 {
 				cfg.RetentionCount = v
 			}
+		case arg == "--category" || arg == "-c":
+			if i+1 < len(args) {
+				category = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(arg, "--category="):
+			category = strings.TrimPrefix(arg, "--category=")
+		case strings.HasPrefix(arg, "-c="):
+			category = strings.TrimPrefix(arg, "-c=")
 		default:
 			positional = append(positional, arg)
 		}
@@ -126,9 +137,12 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 	if explicitTag != "" {
 		if strings.Contains(explicitTag, ":") {
 			parts := strings.SplitN(explicitTag, ":", 2)
-			cfg.Repository = parts[0]
+			if parts[0] != "" {
+				cfg.Repository = parts[0]
+			}
 			explicitTag = parts[1]
 		}
+		explicitTag = strings.TrimPrefix(explicitTag, ":")
 		tag = explicitTag
 		if strings.Contains(tag, "-") {
 			category = strings.SplitN(tag, "-", 2)[0]
@@ -205,6 +219,13 @@ func runBoard(args []string, dryRun bool) {
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
 	args = cleanedArgs
 	_ = cliEngine
+
+	for _, a := range args {
+		if a == "--dry" || a == "--dry-run" || a == "-n" {
+			dryRun = true
+			break
+		}
+	}
 
 	ws := getWorkspaceRoot()
 	cfg, hasConfigFile, err := LoadAppConfig(ws, cliRepo)

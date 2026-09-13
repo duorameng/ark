@@ -508,6 +508,59 @@ func extractDestFlag(args []string) ([]string, string) {
 	return cleaned, dest
 }
 
+// extractTagFlag 从命令行参数中提取 --tag, -t 目标航次标签参数
+func extractTagFlag(args []string) ([]string, string) {
+	var cleaned []string
+	tag := ""
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--tag" || arg == "-t" {
+			if i+1 < len(args) {
+				tag = args[i+1]
+				i++
+				continue
+			}
+		} else if strings.HasPrefix(arg, "--tag=") {
+			tag = strings.TrimPrefix(arg, "--tag=")
+			continue
+		} else if strings.HasPrefix(arg, "-t=") {
+			tag = strings.TrimPrefix(arg, "-t=")
+			continue
+		}
+		cleaned = append(cleaned, arg)
+	}
+
+	tag = strings.TrimPrefix(tag, ":")
+	return cleaned, tag
+}
+
+// extractCategoryFlag 从命令行参数中提取 --category, -c 业务分类参数
+func extractCategoryFlag(args []string) ([]string, string) {
+	var cleaned []string
+	category := ""
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--category" || arg == "-c" {
+			if i+1 < len(args) {
+				category = args[i+1]
+				i++
+				continue
+			}
+		} else if strings.HasPrefix(arg, "--category=") {
+			category = strings.TrimPrefix(arg, "--category=")
+			continue
+		} else if strings.HasPrefix(arg, "-c=") {
+			category = strings.TrimPrefix(arg, "-c=")
+			continue
+		}
+		cleaned = append(cleaned, arg)
+	}
+
+	return cleaned, category
+}
+
 // resolveBackupDir 综合解析待备份目录路径: 命令行参数 > 环境变量 (ARK_BACKUP_DIR / ARK_BACKUP_PATH / ARK_SOURCE_DIR) > 工作区根目录
 func resolveBackupDir(ws, cliDir string) string {
 	if strings.TrimSpace(cliDir) != "" {

@@ -9,6 +9,8 @@ import (
 func runList(args []string) {
 	cleanedArgs, cliTarget := extractTargetFlag(args)
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
+	cleanedArgs, cliTag := extractTagFlag(cleanedArgs)
+	cleanedArgs, cliCategory := extractCategoryFlag(cleanedArgs)
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
@@ -16,7 +18,11 @@ func runList(args []string) {
 	cfg, _, _ := LoadAppConfig(ws, cliRepo)
 
 	categoryFilter := ""
-	if len(args) > 0 {
+	if cliCategory != "" {
+		categoryFilter = cliCategory
+	} else if cliTag != "" {
+		categoryFilter = cliTag
+	} else if len(args) > 0 {
 		categoryFilter = args[0]
 	}
 

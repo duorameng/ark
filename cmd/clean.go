@@ -11,6 +11,8 @@ import (
 func runClean(args []string) {
 	cleanedArgs, cliTarget := extractTargetFlag(args)
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
+	cleanedArgs, _ = extractTagFlag(cleanedArgs)
+	cleanedArgs, _ = extractCategoryFlag(cleanedArgs)
 	args = cleanedArgs
 
 	ws := getWorkspaceRoot()
