@@ -580,11 +580,123 @@ func resolveBackupDir(ws, cliDir string) string {
 	return ws
 }
 
+// extractExcludeFlag 从命令行参数中提取 --exclude, -e 排除过滤规则参数
+func extractExcludeFlag(args []string) ([]string, []string) {
+	var cleaned []string
+	var excludes []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--exclude" || arg == "-e" {
+			if i+1 < len(args) {
+				val := args[i+1]
+				parts := strings.FieldsFunc(val, func(r rune) bool {
+					return r == ',' || r == ';'
+				})
+				for _, p := range parts {
+					if t := strings.TrimSpace(p); t != "" {
+						excludes = append(excludes, t)
+					}
+				}
+				i++
+				continue
+			}
+		} else if strings.HasPrefix(arg, "--exclude=") {
+			val := strings.TrimPrefix(arg, "--exclude=")
+			parts := strings.FieldsFunc(val, func(r rune) bool {
+				return r == ',' || r == ';'
+			})
+			for _, p := range parts {
+				if t := strings.TrimSpace(p); t != "" {
+					excludes = append(excludes, t)
+				}
+			}
+			continue
+		} else if strings.HasPrefix(arg, "-e=") {
+			val := strings.TrimPrefix(arg, "-e=")
+			parts := strings.FieldsFunc(val, func(r rune) bool {
+				return r == ',' || r == ';'
+			})
+			for _, p := range parts {
+				if t := strings.TrimSpace(p); t != "" {
+					excludes = append(excludes, t)
+				}
+			}
+			continue
+		}
+		cleaned = append(cleaned, arg)
+	}
+
+	return cleaned, excludes
+}
+
+// extractAutoScanFlag 从命令行参数中提取 --auto-scan, --scan, --no-scan 自动扫描标志
+func extractAutoScanFlag(args []string) ([]string, *bool) {
+	var cleaned []string
+	var autoScan *bool
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--auto-scan" || arg == "--scan" {
+			val := true
+			autoScan = &val
+			continue
+		} else if arg == "--no-scan" || arg == "--no-auto-scan" {
+			val := false
+			autoScan = &val
+			continue
+		}
+		cleaned = append(cleaned, arg)
+	}
+
+	return cleaned, autoScan
+}
+
+// resolveScanExcludeFromEnv 从环境变量读取用户配置的排除模式
+func resolveScanExcludeFromEnv(ws string) []string {
+	loadEnvFile(ws)
+	var raw string
+	for _, key := range []string{config.EnvArkScanExclude, config.EnvArkExclude} {
+		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+			raw = val
+			break
+		}
+	}
+	if raw == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' '
+	})
+	res := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			res = append(res, t)
+		}
+	}
+	return res
+}
+
+// resolveAutoScanFromEnv 从环境变量读取自动扫描配置
+func resolveAutoScanFromEnv(ws string) *bool {
+	loadEnvFile(ws)
+	if val := strings.TrimSpace(os.Getenv(config.EnvArkAutoScan)); val != "" {
+		b := strings.ToLower(val) == "true" || val == "1"
+		return &b
+	}
+	return nil
+}
+
 // resolveBackupSourcesFromEnv 从 .env 环境变量中动态探测并装配备份货舱舱位源:
 // 1. 优先检索 ARK_BACKUP_DIR / ARK_BACKUP_PATH / ARK_SOURCE_DIR;
 // 2. 支持以逗号/分号分隔的多个目录，如: "/data/web, /data/db";
-// 3. 若为单个总目录且包含子结构，自动调用 scanner.ScanRoot 智能分离子模块与根同级文件;
+// 3. 若为单个总目录且包含子结构，自动调用 scanner.ScanRootWithOptions 智能分离子模块与根同级文件并应用排除过滤规则;
 func resolveBackupSourcesFromEnv(ws string) []config.Source {
+	return resolveBackupSourcesFromEnvWithOptions(ws, nil)
+}
+
+// resolveBackupSourcesFromEnvWithOptions 支持指定额外排除过滤规则
+func resolveBackupSourcesFromEnvWithOptions(ws string, extraExcludes []string) []config.Source {
 	loadEnvFile(ws)
 	var rawPath string
 	for _, key := range []string{config.EnvArkBackupDir, config.EnvArkBackupPath, config.EnvArkSourceDir} {
@@ -638,7 +750,13 @@ func resolveBackupSourcesFromEnv(ws string) []config.Source {
 		}
 
 		if stat, err := os.Stat(singlePath); err == nil && stat.IsDir() {
-			if results, err := scanner.ScanRoot(singlePath); err == nil && len(results) > 0 {
+			allExcludes := append([]string{}, resolveScanExcludeFromEnv(ws)...)
+			allExcludes = append(allExcludes, extraExcludes...)
+			opts := scanner.ScanOptions{
+				Excludes: allExcludes,
+				Silent:   true,
+			}
+			if results, err := scanner.ScanRootWithOptions(singlePath, opts); err == nil && len(results) > 0 {
 				for _, r := range results {
 					sources = append(sources, r.Source)
 				}
@@ -663,7 +781,8 @@ func resolveBackupSourcesFromEnv(ws string) []config.Source {
 // 2. 尝试读取工作区 config.json 并自动对 sources 路径执行环境变量展开；
 // 3. 若物理 config.json 不存在或 sources 为空，自动通过 .env (ARK_BACKUP_DIR) 填充动态备份源；
 // 4. 结合命令行参数 (--repo)、环境变量 (ARK_REPOSITORY) 和配置文件确定最终 Repository；
-// 5. 返回 (*config.Config, hasConfigFile bool, err error)。
+// 5. 自动整合 ARK_AUTO_SCAN 与 ARK_SCAN_EXCLUDE / ARK_EXCLUDE 排除规则；
+// 6. 返回 (*config.Config, hasConfigFile bool, err error)。
 func LoadAppConfig(ws, cliRepo string) (*config.Config, bool, error) {
 	loadEnvFile(ws)
 
@@ -687,6 +806,9 @@ func LoadAppConfig(ws, cliRepo string) (*config.Config, bool, error) {
 			}
 		}
 
+		envExcludes := resolveScanExcludeFromEnv(ws)
+		envAutoScan := resolveAutoScanFromEnv(ws)
+
 		cfg = &config.Config{
 			Repository:        resolveRepository("", cliRepo),
 			Category:          category,
@@ -696,11 +818,13 @@ func LoadAppConfig(ws, cliRepo string) (*config.Config, bool, error) {
 			PushRetry:         config.DefaultPushRetry,
 			CleanAfterPush:    &defaultClean,
 			CleanAllAfterPush: &defaultCleanAll,
+			AutoScan:          envAutoScan,
+			Exclude:           envExcludes,
 			Sources:           make([]config.Source, 0),
 		}
 
 		// 核心亮点：免 config.json 场景下，自动装载来自 .env (ARK_BACKUP_DIR) 的备份舱位
-		if envSources := resolveBackupSourcesFromEnv(ws); len(envSources) > 0 {
+		if envSources := resolveBackupSourcesFromEnvWithOptions(ws, envExcludes); len(envSources) > 0 {
 			cfg.Sources = envSources
 		}
 
@@ -730,9 +854,17 @@ func LoadAppConfig(ws, cliRepo string) (*config.Config, bool, error) {
 		}
 	}
 
+	if envAutoScan := resolveAutoScanFromEnv(ws); envAutoScan != nil {
+		cfg.AutoScan = envAutoScan
+	}
+
+	if envExcludes := resolveScanExcludeFromEnv(ws); len(envExcludes) > 0 {
+		cfg.Exclude = append(cfg.Exclude, envExcludes...)
+	}
+
 	// 若 config.json 存在但 sources 列表为空，尝试通过 .env 中的 ARK_BACKUP_DIR 自动补全
 	if len(cfg.Sources) == 0 {
-		if envSources := resolveBackupSourcesFromEnv(ws); len(envSources) > 0 {
+		if envSources := resolveBackupSourcesFromEnvWithOptions(ws, cfg.GetExcludePatterns()); len(envSources) > 0 {
 			cfg.Sources = envSources
 		}
 	}

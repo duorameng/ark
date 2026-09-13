@@ -19,12 +19,23 @@ type ScanResult struct {
 	Volatility string
 }
 
-// ScanRoot 深度扫描目标总目录，自动评估子目录冷热度并排序
+// ScanRoot 深度扫描目标总目录，自动评估子目录冷热度并排序 (默认配置)
 func ScanRoot(scanRoot string) ([]ScanResult, error) {
+	return ScanRootWithOptions(scanRoot, ScanOptions{})
+}
+
+// ScanRootWithOptions 深度扫描目标总目录，支持自定义排除过滤规则与忽略文件
+func ScanRootWithOptions(scanRoot string, opts ScanOptions) ([]ScanResult, error) {
 	entries, err := os.ReadDir(scanRoot)
 	if err != nil {
 		return nil, err
 	}
+
+	// 汇总所有排除模式 (外部指定 + .arkignore / .gitignore 文件)
+	filePatterns := LoadIgnorePatterns(scanRoot, opts.IgnoreFile)
+	allExcludes := make([]string, 0, len(opts.Excludes)+len(filePatterns))
+	allExcludes = append(allExcludes, opts.Excludes...)
+	allExcludes = append(allExcludes, filePatterns...)
 
 	results := make([]ScanResult, 0)
 	usedIDs := make(map[string]bool)
@@ -33,7 +44,18 @@ func ScanRoot(scanRoot string) ([]ScanResult, error) {
 
 	for _, entry := range entries {
 		name := entry.Name()
+		fullPath := filepath.Join(scanRoot, name)
+
+		// 1. 系统内置黑名单检查
 		if IsIgnoredRootEntry(name) {
+			continue
+		}
+
+		// 2. 自定义排除规则检查 (目录与文件均生效)
+		if matched, pattern := MatchExcludePattern(name, fullPath, scanRoot, allExcludes); matched {
+			if !opts.Silent {
+				fmt.Printf("   [过滤排除] 忽略项: %s (匹配规则: %s)\n", name, pattern)
+			}
 			continue
 		}
 
@@ -44,8 +66,6 @@ func ScanRoot(scanRoot string) ([]ScanResult, error) {
 			}
 			continue
 		}
-
-		fullPath := filepath.Join(scanRoot, name)
 
 		id := strings.Map(func(r rune) rune {
 			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {

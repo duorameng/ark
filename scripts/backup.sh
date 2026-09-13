@@ -90,6 +90,7 @@ fi
 
 # 备份保留个数配额 (优先从 .env 读取，默认保留 5 个历史版本)
 RETENTION_COUNT="${ARK_RETENTION_COUNT:-5}"
+AUTO_SCAN="${ARK_AUTO_SCAN:-false}"
 
 # 默认航运策略参数:
 # - day: 生成按天归档标签 (例如: vps-20260912，每天固定版本)
@@ -97,11 +98,14 @@ RETENTION_COUNT="${ARK_RETENTION_COUNT:-5}"
 # - --clean-all: 推送完成后彻底重置本地 cache 与临时文件，恢复 0 字节初始状态
 # 用户亦可在运行脚本时传入自定义参数覆盖，如: ./backup.sh db day --keep 7
 BACKUP_ARGS=("day" "--keep" "${RETENTION_COUNT}" "--clean-all")
+if [[ "${AUTO_SCAN}" == "true" || "${AUTO_SCAN}" == "1" ]]; then
+    BACKUP_ARGS+=("--auto-scan")
+fi
 if [[ $# -gt 0 ]]; then
     BACKUP_ARGS=("$@")
 fi
 
-echo "[CONFIG] 备份保留配额: 最近 ${RETENTION_COUNT} 个版本" >> "${LOG_FILE}"
+echo "[CONFIG] 备份保留配额: 最近 ${RETENTION_COUNT} 个版本 | 自动扫描: ${AUTO_SCAN}" >> "${LOG_FILE}"
 echo "[EXEC]   执行命令: ${ARK_BIN} ${BACKUP_ARGS[*]}" >> "${LOG_FILE}"
 
 # 执行备份并将标准输出与错误双向记录至日志

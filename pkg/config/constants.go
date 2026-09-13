@@ -58,12 +58,16 @@ const (
 	EnvArkToken             = "ARK_TOKEN"
 	EnvArkTag               = "ARK_TAG"
 	EnvArkFixedTag          = "ARK_FIXED_TAG"
+	EnvArkAutoScan          = "ARK_AUTO_SCAN"
+	EnvArkScanExclude       = "ARK_SCAN_EXCLUDE"
+	EnvArkExclude           = "ARK_EXCLUDE"
 	EnvAliyunRepository     = "ALIYUN_REPOSITORY"
 	EnvAliyunUsername       = "ALIYUN_USERNAME"
 	EnvAliyunPassword       = "ALIYUN_PASSWORD"
 	EnvGithubRepository     = "GITHUB_REPOSITORY"
 	EnvGhToken              = "GH_TOKEN"
 	EnvGithubToken          = "GITHUB_TOKEN"
+	ArkIgnoreFileName       = ".arkignore"
 )
 
 // 归档文件后缀常量

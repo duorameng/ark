@@ -100,6 +100,8 @@ Ark 全面推行标准化 CLI 参数解析管道，所有核心指令语法高�
 | **封条口令** | `--key <k>` | **`-k <k>`** | `--key=<k>`, `-k=<k>` | `board`, `dry`, `land`, `unpack`, `check` | AES-256 加解密封条自定义口令 |
 | **时间精度** | `--precision <p>` | **`-p <p>`** | `--day`/`-d`, `--minute`/`-m`, `--second`/`-s` | `board`, `dry` | 标签时间生成精度（日/时/分/秒） |
 | **模拟试航** | `--dry`, `--dry-run` | **`-n`** | - | `board`, `dry` | 试航演练，完成全部加封验证但不实际向远端推流 |
+| **自动扫描** | `--auto-scan`, `--scan` | - | `--no-scan` | `board`, `dry` | 登船前全自动探测最新目录结构与变更，动态同步清单 |
+| **过滤排除** | `--exclude <pattern>` | **`-e <pattern>`** | `--exclude=<p>`, `-e=<p>` | `board`, `dry`, `scan` | 排除指定目录或通配符规则（支持逗号分隔与 `.arkignore`） |
 | **指纹缓存** | `--keep-cache`, `--no-clean` | - | - | `board`, `dry` | 航次完成后严格保留本地 `cache/` 指纹与集装箱 |
 | **全量重置** | `--clean-all`, `--purge`, `--reset` | - | - | `board`, `clean` | 彻底清空本地缓存、临时目录与孤立文件 |
 
@@ -109,7 +111,9 @@ Ark 全面推行标准化 CLI 参数解析管道，所有核心指令语法高�
 
 | 使用场景 | 推荐命令 / 操作方式 | 说明 |
 | :--- | :--- | :--- |
-| **免配置文件极速登船交付** | 配置 `.env` 中的 `ARK_SOURCE_DIR`，运行 `./ark board` | 零门槛，自动探测并分层装载推送 |
+| **免配置文件极速登船交付** | 配置 `.env` 中的 `ARK_BACKUP_DIR`，运行 `./ark board` | 零门槛，自动探测并分层装载推送 |
+| **登船前全自动扫描同步清单** | `./ark board --auto-scan` 或 `.env` 设 `ARK_AUTO_SCAN=true` | 自动感知并装配新子目录，删除旧目录，免维护 |
+| **扫描与登船时排除特定目录** | `./ark scan -e "logs,watchover,*.tmp"` | 支持通配符排除指定目录，自动保存至清单 |
 | **试运行演练 (Dry Run)** | `./ark dry` 或 `./ark board --dry` | 检查冷热排序、UUID 根同级文件层、Tree Hash 构型 |
 | **即时扫描指定目录** | `./ark scan /path/to/project` | 智能分析工程并生成 `config.json` |
 | **按天定时交付打标** | `./ark board nd3 day` 或 `./ark board -c nd3 --day` | 标签为 `nd3-YYYYMMDD`，自动固定东八区 |
@@ -202,6 +206,38 @@ Ark 提供 3 种指定源路径的方式，满足从自动化运维到精细化�
   ]
 }
 ```
+
+#### 4. 方式 D：全自动扫描感知与目录排除过滤（Auto-Scan & Exclude Filter）
+当您在工作区不断增加或调整微服务目录时，Ark 支持免维护全自动探测与过滤排除：
+
+- **环境变量启用（推荐）**：
+  在 `.env` 中开启自动扫描与排除规则：
+  ```env
+  ARK_AUTO_SCAN=true
+  ARK_SCAN_EXCLUDE="tmp,cache,logs,watchover,*.tmp"
+  ```
+  此时每次执行 `./ark board`，程序均会自动探测最新目录结构，自动排除命中规则的目录，并动态更新清单。
+
+- **命令行即时排除与自动扫描**：
+  ```bash
+  # 扫描时排除指定目录并固化：
+  ./ark scan -e "logs,watchover,*.tmp"
+
+  # 登船装箱时临时排除指定目录：
+  ./ark board -e "temp_build,cache"
+
+  # 强制要求登船前执行一次全自动探测同步：
+  ./ark board --auto-scan
+  ```
+
+- **`.arkignore` 文件规则定义**：
+  亦可在待备份根目录下创建 `.arkignore` 文件（语法与 `.gitignore` 一致），每行定义一项规则，例如：
+  ```text
+  logs/
+  node_modules/
+  *.tmp
+  watchover
+  ```
 
 ---
 

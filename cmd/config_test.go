@@ -426,6 +426,57 @@ func TestUnifiedTagFlagsAcrossCommands(t *testing.T) {
 	}
 }
 
+func TestExtractExcludeFlag(t *testing.T) {
+	cases := []struct {
+		args             []string
+		expectedExcludes []string
+		remainLen        int
+	}{
+		{[]string{"--exclude=logs,*.tmp", "board"}, []string{"logs", "*.tmp"}, 1},
+		{[]string{"--exclude", "watchover", "-e", "cache", "board"}, []string{"watchover", "cache"}, 1},
+		{[]string{"-e=data,temp", "-o", "/dest"}, []string{"data", "temp"}, 2},
+	}
+
+	for i, c := range cases {
+		cleaned, ex := extractExcludeFlag(c.args)
+		if len(ex) != len(c.expectedExcludes) {
+			t.Errorf("case %d: expected %d excludes, got %d: %v", i, len(c.expectedExcludes), len(ex), ex)
+		}
+		if len(cleaned) != c.remainLen {
+			t.Errorf("case %d: expected %d remaining args, got %d: %v", i, c.remainLen, len(cleaned), cleaned)
+		}
+	}
+}
+
+func TestExtractAutoScanFlag(t *testing.T) {
+	cases := []struct {
+		args      []string
+		expected  *bool
+		remainLen int
+	}{
+		{[]string{"--auto-scan", "board"}, boolPtr(true), 1},
+		{[]string{"--scan", "board"}, boolPtr(true), 1},
+		{[]string{"--no-scan", "board"}, boolPtr(false), 1},
+		{[]string{"board"}, nil, 1},
+	}
+
+	for i, c := range cases {
+		cleaned, got := extractAutoScanFlag(c.args)
+		if (c.expected == nil && got != nil) || (c.expected != nil && got == nil) {
+			t.Errorf("case %d: expected %v, got %v", i, c.expected, got)
+		} else if c.expected != nil && got != nil && *c.expected != *got {
+			t.Errorf("case %d: expected %v, got %v", i, *c.expected, *got)
+		}
+		if len(cleaned) != c.remainLen {
+			t.Errorf("case %d: expected %d remaining args, got %d: %v", i, c.remainLen, len(cleaned), cleaned)
+		}
+	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 
 
 

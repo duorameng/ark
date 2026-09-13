@@ -97,3 +97,55 @@ func TestScanConflictWithInternalID(t *testing.T) {
 		t.Fatalf("collision detected! both sources have ID: %s", results[0].Source.ID)
 	}
 }
+
+func TestScanRootWithExcludeFilter(t *testing.T) {
+	tempDir := t.TempDir()
+
+	_ = os.MkdirAll(filepath.Join(tempDir, "service_keep"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "service_keep", "app.go"), []byte("package main"), 0644)
+
+	_ = os.MkdirAll(filepath.Join(tempDir, "service_exclude"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "service_exclude", "data.bin"), []byte("123"), 0644)
+
+	_ = os.MkdirAll(filepath.Join(tempDir, "test_temp_cache"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "test_temp_cache", "cache.dat"), []byte("cache"), 0644)
+
+	_ = os.MkdirAll(filepath.Join(tempDir, "logs"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "logs", "app.log"), []byte("log"), 0644)
+
+	// 写入 .arkignore
+	_ = os.WriteFile(filepath.Join(tempDir, ".arkignore"), []byte("# Ignore rules\nlogs\n*.log\n"), 0644)
+
+	opts := ScanOptions{
+		Excludes: []string{"service_exclude", "*_temp_*"},
+		Silent:   true,
+	}
+
+	results, err := ScanRootWithOptions(tempDir, opts)
+	if err != nil {
+		t.Fatalf("ScanRootWithOptions error: %v", err)
+	}
+
+	for _, r := range results {
+		if r.Source.Name == "service_exclude" {
+			t.Errorf("service_exclude should have been filtered out!")
+		}
+		if r.Source.Name == "test_temp_cache" {
+			t.Errorf("test_temp_cache should have been filtered out by wildcard!")
+		}
+		if r.Source.Name == "logs" {
+			t.Errorf("logs should have been filtered out by .arkignore!")
+		}
+	}
+
+	foundKeep := false
+	for _, r := range results {
+		if r.Source.Name == "service_keep" {
+			foundKeep = true
+			break
+		}
+	}
+	if !foundKeep {
+		t.Errorf("service_keep should be preserved in scan results")
+	}
+}

@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -60,7 +61,14 @@ const (
 	RootFilesDataLabel = "极少变动 (根级同级文件)"
 )
 
-// IsIgnoredRootEntry 判断是否为根目录扫描时应当忽略的项
+// ScanOptions 目录扫描与变动评估控制参数
+type ScanOptions struct {
+	Excludes   []string // 外部传入的排除过滤规则 (例如: "watchover", "cache", "*.tmp")
+	IgnoreFile string   // 指定的 ignore 规则文件路径，为空时自动检测 .arkignore / .gitignore
+	Silent     bool     // 是否静默输出 (不打印忽略项回显)
+}
+
+// IsIgnoredRootEntry 判断是否为根目录扫描时应当默认忽略的项
 func IsIgnoredRootEntry(name string) bool {
 	lower := strings.ToLower(name)
 	if IgnoredRootEntries[lower] {
@@ -70,6 +78,78 @@ func IsIgnoredRootEntry(name string) bool {
 		return true
 	}
 	return false
+}
+
+// LoadIgnorePatterns 从指定目录的 .arkignore 或 .gitignore 加载排除模式
+func LoadIgnorePatterns(scanRoot string, customIgnoreFile string) []string {
+	var filesToTry []string
+	if customIgnoreFile != "" {
+		filesToTry = append(filesToTry, customIgnoreFile)
+	} else {
+		filesToTry = append(filesToTry,
+			filepath.Join(scanRoot, ".arkignore"),
+			filepath.Join(scanRoot, ".gitignore"),
+		)
+	}
+
+	patterns := make([]string, 0)
+	for _, f := range filesToTry {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			patterns = append(patterns, line)
+		}
+		// 优先找到并加载第一个即可 (.arkignore > .gitignore)
+		break
+	}
+	return patterns
+}
+
+// MatchExcludePattern 判断文件或目录是否匹配任意排除规则，若匹配返回 true 及命中的规则文本
+func MatchExcludePattern(name, fullPath, scanRoot string, patterns []string) (bool, string) {
+	lowerName := strings.ToLower(name)
+	relPath := name
+	if scanRoot != "" {
+		if r, err := filepath.Rel(scanRoot, fullPath); err == nil && r != "." {
+			relPath = filepath.ToSlash(r)
+		}
+	}
+	lowerRel := strings.ToLower(relPath)
+
+	for _, p := range patterns {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		pClean := filepath.ToSlash(strings.TrimSuffix(strings.TrimSuffix(p, "/"), "\\"))
+		lowerP := strings.ToLower(pClean)
+
+		// 1. 精确名称或相对路径匹配 (大小写不敏感)
+		if lowerName == lowerP || lowerRel == lowerP {
+			return true, p
+		}
+
+		// 2. 通配符匹配 (如 *.tmp, *-demo, test_*)
+		if matched, _ := filepath.Match(lowerP, lowerName); matched {
+			return true, p
+		}
+		if matched, _ := filepath.Match(lowerP, lowerRel); matched {
+			return true, p
+		}
+
+		// 3. 目录名作为路径前缀包含 (如 rules 为 "data" 时，匹配 "data/sub")
+		if strings.HasPrefix(lowerRel, lowerP+"/") {
+			return true, p
+		}
+	}
+	return false, ""
 }
 
 // IsDatabaseDir 判断目录名是否符合数据库特征

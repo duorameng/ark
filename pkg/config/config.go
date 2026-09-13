@@ -36,6 +36,8 @@ type Config struct {
 	PushRetry         int      `json:"push_retry,omitempty"`           // docker push 失败重试次数 (默认 3 次)
 	CleanAfterPush    *bool    `json:"clean_after_push,omitempty"`     // build/push 完成后是否自动清理本地镜像与构建缓存 (默认 true)
 	CleanAllAfterPush *bool    `json:"clean_all_after_push,omitempty"` // build/push 完成后是否彻底清空 cache/tmp 并重置初始状态 (默认 false)
+	AutoScan          *bool    `json:"auto_scan,omitempty"`            // 登船装载前是否自动扫描并动态同步货舱清单 (默认 false)
+	Exclude           []string `json:"exclude,omitempty"`              // 自动扫描与装箱时过滤排除的目录或文件规则列表
 	Sources           []Source `json:"sources"`
 }
 
@@ -53,6 +55,24 @@ func (c *Config) ShouldCleanAllAfterPush() bool {
 		return *c.CleanAllAfterPush
 	}
 	return false
+}
+
+// ShouldAutoScan 判断登船前是否需要执行自动扫描探测并动态刷新货舱清单
+func (c *Config) ShouldAutoScan() bool {
+	if c.AutoScan != nil {
+		return *c.AutoScan
+	}
+	return false
+}
+
+// GetExcludePatterns 返回配置文件中定义的排除过滤规则副本
+func (c *Config) GetExcludePatterns() []string {
+	if len(c.Exclude) == 0 {
+		return nil
+	}
+	res := make([]string, len(c.Exclude))
+	copy(res, c.Exclude)
+	return res
 }
 
 // DefaultConfig 返回预设默认配置

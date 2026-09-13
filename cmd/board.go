@@ -14,6 +14,7 @@ import (
 	"ark/pkg/config"
 	"ark/pkg/hash"
 	"ark/pkg/oci"
+	"ark/pkg/scanner"
 	"ark/pkg/timezone"
 )
 
@@ -129,8 +130,14 @@ func parseBoardFlags(cfg *config.Config, args []string) (tag, category, precisio
 			category = strings.TrimPrefix(arg, "--category=")
 		case strings.HasPrefix(arg, "-c="):
 			category = strings.TrimPrefix(arg, "-c=")
+		case arg == "--dry" || arg == "--dry-run" || arg == "-n":
+			// 属于 flag，忽略不计入 positional
+		case arg == "--auto-scan" || arg == "--scan" || arg == "--no-scan" || arg == "--no-auto-scan":
+			// 属于 flag，忽略不计入 positional
 		default:
-			positional = append(positional, arg)
+			if !strings.HasPrefix(arg, "-") {
+				positional = append(positional, arg)
+			}
 		}
 	}
 
@@ -217,6 +224,8 @@ func runBoard(args []string, dryRun bool) {
 	cleanedArgs, cliKey := extractKeyFlag(cleanedArgs)
 	cleanedArgs, cliTarget := extractTargetFlag(cleanedArgs)
 	cleanedArgs, cliRepo := extractRepoFlag(cleanedArgs)
+	cleanedArgs, cliAutoScan := extractAutoScanFlag(cleanedArgs)
+	cleanedArgs, cliExcludes := extractExcludeFlag(cleanedArgs)
 	args = cleanedArgs
 	_ = cliEngine
 
@@ -229,10 +238,79 @@ func runBoard(args []string, dryRun bool) {
 
 	ws := getWorkspaceRoot()
 	cfg, hasConfigFile, err := LoadAppConfig(ws, cliRepo)
-	if !hasConfigFile || err != nil {
+
+	// 判断是否需要执行自动扫描
+	needAutoScan := cfg.ShouldAutoScan()
+	if cliAutoScan != nil {
+		needAutoScan = *cliAutoScan
+	}
+
+	// 汇总所有排除过滤规则
+	mergedExcludesMap := make(map[string]bool)
+	for _, p := range cfg.GetExcludePatterns() {
+		mergedExcludesMap[p] = true
+	}
+	for _, p := range resolveScanExcludeFromEnv(ws) {
+		mergedExcludesMap[p] = true
+	}
+	for _, p := range cliExcludes {
+		mergedExcludesMap[p] = true
+	}
+	allExcludes := make([]string, 0, len(mergedExcludesMap))
+	for p := range mergedExcludesMap {
+		allExcludes = append(allExcludes, p)
+	}
+
+	// 若启用了自动扫描，自动重新探测待备份目录并动态同步货舱清单
+	if needAutoScan {
+		scanRoot := resolveBackupDir(ws, "")
+		if stat, err := os.Stat(scanRoot); err != nil || !stat.IsDir() {
+			scanRoot = ws
+		}
+		if stat, err := os.Stat(scanRoot); err == nil && stat.IsDir() {
+			opts := scanner.ScanOptions{
+				Excludes: allExcludes,
+				Silent:   false,
+			}
+			if results, err := scanner.ScanRootWithOptions(scanRoot, opts); err == nil && len(results) > 0 {
+				cfg.Sources = make([]config.Source, 0, len(results))
+				for _, r := range results {
+					cfg.Sources = append(cfg.Sources, r.Source)
+				}
+				if len(allExcludes) > 0 {
+					cfg.Exclude = allExcludes
+				}
+				if hasConfigFile {
+					configPath := filepath.Join(ws, config.ConfigFileName)
+					_ = cfg.Save(configPath)
+				}
+				fmt.Printf("✓ [自动扫描] 发现 %d 个货舱舱位 (已应用排除规则)，已动态更新清单\n", len(cfg.Sources))
+			}
+		}
+	}
+
+	// 应用排除过滤规则到装载清单 (无论是否触发重新扫描，均严格遵守排除规则)
+	if len(allExcludes) > 0 {
+		filteredSources := make([]config.Source, 0, len(cfg.Sources))
+		for _, s := range cfg.Sources {
+			if matched, pat := scanner.MatchExcludePattern(s.Name, s.Path, ws, allExcludes); matched {
+				fmt.Printf("   [过滤排除] 忽略舱位: %s (匹配规则: %s)\n", s.Name, pat)
+				continue
+			}
+			filteredSources = append(filteredSources, s)
+		}
+		cfg.Sources = filteredSources
+	}
+
+	// 容错检查：只要存在有效货舱 sources，即使无物理 config.json 也允许直接起运！
+	if len(cfg.Sources) == 0 {
 		fmt.Fprintf(os.Stderr, "[-] 登船失败，未能加载有效货运清单: %v\n", err)
-		fmt.Fprintln(os.Stderr, "    提示: 请在工作区配置 config.json，或先运行 'ark scan <目录>' 自动生成清单。")
+		fmt.Fprintln(os.Stderr, "    提示: 请在工作区配置 config.json，或在 .env 中指定 ARK_BACKUP_DIR，或先运行 'ark scan <目录>' 自动生成清单。")
 		os.Exit(1)
+	}
+
+	if !hasConfigFile {
+		fmt.Printf("[探测] 未检测到 config.json，已根据 .env 自动装配 %d 个货舱舱位\n", len(cfg.Sources))
 	}
 
 	targets := resolveRegistryTargets(ws, cliTarget, cliRepo, cfg.Repository)
