@@ -363,6 +363,11 @@ func (cr *countingReader) Read(p []byte) (int, error) {
 
 // PackAndSealSourceStreamWithProgress 将指定源边打包 (Tar) -> 边压缩 (Gzip) -> 边加密 (AES-256) 写入 destDatPath，支持进度回调
 func PackAndSealSourceStreamWithProgress(srcDir, destDatPath string, passphrase []byte, filesOnly bool, onProgress ProgressCallback) error {
+	return PackAndSealSourceStreamWithProgressAndFilter(srcDir, destDatPath, passphrase, filesOnly, onProgress, nil)
+}
+
+// PackAndSealSourceStreamWithProgressAndFilter 将指定源边打包 (Tar) -> 边压缩 (Gzip) -> 边加密 (AES-256) 写入 destDatPath，支持进度回调与 PathFilter 排除过滤
+func PackAndSealSourceStreamWithProgressAndFilter(srcDir, destDatPath string, passphrase []byte, filesOnly bool, onProgress ProgressCallback, filter PathFilter) error {
 	salt := make([]byte, saltLen)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return err
@@ -407,9 +412,9 @@ func PackAndSealSourceStreamWithProgress(srcDir, destDatPath string, passphrase 
 
 	var walkErr error
 	if filesOnly {
-		walkErr = WalkAndWriteFilesOnlyTar(srcDir, tw)
+		walkErr = WalkAndWriteFilesOnlyTarWithFilter(srcDir, tw, filter)
 	} else {
-		walkErr = WalkAndWriteTar(srcDir, tw)
+		walkErr = WalkAndWriteTarWithFilter(srcDir, tw, filter)
 	}
 
 	if err := tw.Close(); err != nil && walkErr == nil {
@@ -441,6 +446,11 @@ func PackAndSealStream(srcDir, destDatPath string, passphrase []byte) error {
 
 // PackSourceTarGzWithProgress 将指定源边打包边 gzip 压缩写入 destTarGzPath，支持进度回调
 func PackSourceTarGzWithProgress(srcDir, destTarGzPath string, filesOnly bool, onProgress ProgressCallback) error {
+	return PackSourceTarGzWithProgressAndFilter(srcDir, destTarGzPath, filesOnly, onProgress, nil)
+}
+
+// PackSourceTarGzWithProgressAndFilter 将指定源边打包边 gzip 压缩写入 destTarGzPath，支持进度回调与 PathFilter 排除过滤
+func PackSourceTarGzWithProgressAndFilter(srcDir, destTarGzPath string, filesOnly bool, onProgress ProgressCallback, filter PathFilter) error {
 	out, err := os.Create(destTarGzPath)
 	if err != nil {
 		return err
@@ -463,9 +473,9 @@ func PackSourceTarGzWithProgress(srcDir, destTarGzPath string, filesOnly bool, o
 
 	var walkErr error
 	if filesOnly {
-		walkErr = WalkAndWriteFilesOnlyTar(srcDir, tw)
+		walkErr = WalkAndWriteFilesOnlyTarWithFilter(srcDir, tw, filter)
 	} else {
-		walkErr = WalkAndWriteTar(srcDir, tw)
+		walkErr = WalkAndWriteTarWithFilter(srcDir, tw, filter)
 	}
 
 	if err := tw.Close(); err != nil && walkErr == nil {

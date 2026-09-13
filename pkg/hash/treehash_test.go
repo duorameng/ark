@@ -67,3 +67,42 @@ func TestLargeFileFastSampleHash(t *testing.T) {
 		t.Errorf("large file hash took too long: %v (expected < 150ms)", elapsed)
 	}
 }
+
+type mockFilter struct {
+	ignored string
+}
+
+func (m *mockFilter) ShouldIgnore(fullPath, cargoRoot string, isDir bool) bool {
+	return filepath.Base(fullPath) == m.ignored
+}
+
+func TestComputeSourceTreeHashWithFilter(t *testing.T) {
+	tempDir := t.TempDir()
+
+	_ = os.MkdirAll(filepath.Join(tempDir, "envs"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "main.py"), []byte("main"), 0644)
+	_ = os.WriteFile(filepath.Join(tempDir, "envs", "lib.py"), []byte("lib"), 0644)
+
+	filter := &mockFilter{ignored: "envs"}
+
+	info1, err := ComputeSourceTreeHashWithFilter(tempDir, false, filter)
+	if err != nil {
+		t.Fatalf("ComputeSourceTreeHashWithFilter failed: %v", err)
+	}
+	if info1.FileCount != 1 {
+		t.Fatalf("expected 1 file counted (envs ignored), got: %d", info1.FileCount)
+	}
+
+	// 在 envs 内部新增/变动文件，整体 Hash 绝不能变动！
+	time.Sleep(10 * time.Millisecond)
+	_ = os.WriteFile(filepath.Join(tempDir, "envs", "new.txt"), []byte("changed"), 0644)
+
+	info2, err := ComputeSourceTreeHashWithFilter(tempDir, false, filter)
+	if err != nil {
+		t.Fatalf("ComputeSourceTreeHashWithFilter failed: %v", err)
+	}
+	if info1.Hash != info2.Hash {
+		t.Fatalf("hash should remain identical when changes occur inside ignored envs/")
+	}
+}
+

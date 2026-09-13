@@ -19,22 +19,32 @@ type DirInfo struct {
 	TotalBytes int64
 }
 
-// ComputeDirTreeHash 兼容旧接口，计算普通目录的 Tree Hash
-func ComputeDirTreeHash(dirPath string) (*DirInfo, error) {
-	return ComputeSourceTreeHash(dirPath, false)
+// PathFilter 抽象路径过滤匹配器接口
+type PathFilter interface {
+	ShouldIgnore(fullPath, cargoRoot string, isDir bool) bool
 }
 
-// ComputeSourceTreeHash 基于极速元数据快照计算目录或同级文件的确定性哈希树 (Zero-Content-Read Tree Hash)
-// 借鉴现代构建系统与 Git Index 原理：
-// 采用 "相对路径 + 精确尺寸 + 纳秒级修改时间 (UnixNano) + 权限属性"
-// 彻底免除对海量小文件或数十GB大文件的全盘打开与内容读取，将扫描检视耗时从数十秒骤降至毫秒级瞬间完成！
+// ComputeDirTreeHash 兼容旧接口，计算普通目录的 Tree Hash
+func ComputeDirTreeHash(dirPath string) (*DirInfo, error) {
+	return ComputeSourceTreeHashWithFilter(dirPath, false, nil)
+}
+
+// ComputeSourceTreeHash 基于极速元数据快照计算目录或同级文件的确定性哈希树 (兼容老接口)
 func ComputeSourceTreeHash(dirPath string, filesOnly bool) (*DirInfo, error) {
+	return ComputeSourceTreeHashWithFilter(dirPath, filesOnly, nil)
+}
+
+// ComputeSourceTreeHashWithFilter 基于极速元数据快照计算目录或同级文件的确定性哈希树，支持 PathFilter 排除过滤
+func ComputeSourceTreeHashWithFilter(dirPath string, filesOnly bool, filter PathFilter) (*DirInfo, error) {
 	info, err := os.Stat(dirPath)
 	if err != nil {
 		return nil, err
 	}
 
 	if !info.IsDir() {
+		if filter != nil && filter.ShouldIgnore(dirPath, dirPath, false) {
+			return &DirInfo{Hash: "empty", FileCount: 0, TotalBytes: 0}, nil
+		}
 		// 单文件极速元数据指纹
 		h := sha256.New()
 		fmt.Fprintf(h, "%d|%d|%d", info.Size(), info.ModTime().UnixNano(), uint32(info.Mode()))
@@ -62,6 +72,10 @@ func ComputeSourceTreeHash(dirPath string, filesOnly bool) (*DirInfo, error) {
 			if name == "ark" || name == "ark.exe" || name == "tmp" || name == "cache" || strings.HasPrefix(name, ".git") {
 				continue
 			}
+			filePath := filepath.Join(dirPath, name)
+			if filter != nil && filter.ShouldIgnore(filePath, dirPath, false) {
+				continue
+			}
 			fi, err := e.Info()
 			if err != nil {
 				continue
@@ -80,6 +94,13 @@ func ComputeSourceTreeHash(dirPath string, filesOnly bool) (*DirInfo, error) {
 				if archive.ShouldIgnoreDir(d.Name()) && path != dirPath {
 					return filepath.SkipDir
 				}
+				if filter != nil && path != dirPath && filter.ShouldIgnore(path, dirPath, true) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			if filter != nil && filter.ShouldIgnore(path, dirPath, false) {
 				return nil
 			}
 

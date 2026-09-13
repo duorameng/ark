@@ -63,9 +63,10 @@ const (
 
 // ScanOptions 目录扫描与变动评估控制参数
 type ScanOptions struct {
-	Excludes   []string // 外部传入的排除过滤规则 (例如: "watchover", "cache", "*.tmp")
-	IgnoreFile string   // 指定的 ignore 规则文件路径，为空时自动检测 .arkignore / .gitignore
-	Silent     bool     // 是否静默输出 (不打印忽略项回显)
+	Excludes   []string          // 外部传入的排除过滤规则 (例如: "watchover", "cache", "*.tmp")
+	IgnoreFile string            // 指定的 ignore 规则文件路径，为空时自动检测 .arkignore / .gitignore
+	Silent     bool              // 是否静默输出 (不打印忽略项回显)
+	Matcher    *GitIgnoreMatcher // 注入的预装载 GitIgnore 匹配器 (全面遵循 Git 规范)
 }
 
 // IsIgnoredRootEntry 判断是否为根目录扫描时应当默认忽略的项
@@ -112,44 +113,20 @@ func LoadIgnorePatterns(scanRoot string, customIgnoreFile string) []string {
 	return patterns
 }
 
-// MatchExcludePattern 判断文件或目录是否匹配任意排除规则，若匹配返回 true 及命中的规则文本
+// MatchExcludePattern 判断文件或目录是否匹配任意排除规则，若匹配返回 true 及命中的规则文本 (底层对齐 Git 规范)
 func MatchExcludePattern(name, fullPath, scanRoot string, patterns []string) (bool, string) {
-	lowerName := strings.ToLower(name)
-	relPath := name
-	if scanRoot != "" {
-		if r, err := filepath.Rel(scanRoot, fullPath); err == nil && r != "." {
-			relPath = filepath.ToSlash(r)
-		}
+	if len(patterns) == 0 {
+		return false, ""
 	}
-	lowerRel := strings.ToLower(relPath)
+	m := NewGitIgnoreMatcher("", scanRoot)
+	m.AddRules(patterns)
 
-	for _, p := range patterns {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		pClean := filepath.ToSlash(strings.TrimSuffix(strings.TrimSuffix(p, "/"), "\\"))
-		lowerP := strings.ToLower(pClean)
-
-		// 1. 精确名称或相对路径匹配 (大小写不敏感)
-		if lowerName == lowerP || lowerRel == lowerP {
-			return true, p
-		}
-
-		// 2. 通配符匹配 (如 *.tmp, *-demo, test_*)
-		if matched, _ := filepath.Match(lowerP, lowerName); matched {
-			return true, p
-		}
-		if matched, _ := filepath.Match(lowerP, lowerRel); matched {
-			return true, p
-		}
-
-		// 3. 目录名作为路径前缀包含 (如 rules 为 "data" 时，匹配 "data/sub")
-		if strings.HasPrefix(lowerRel, lowerP+"/") {
-			return true, p
-		}
+	isDir := false
+	if stat, err := os.Stat(fullPath); err == nil {
+		isDir = stat.IsDir()
 	}
-	return false, ""
+
+	return m.MatchWithReason(fullPath, scanRoot, isDir)
 }
 
 // IsDatabaseDir 判断目录名是否符合数据库特征

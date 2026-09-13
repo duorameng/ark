@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -325,4 +326,60 @@ func BenchmarkLargeMixedPackAndSeal(b *testing.B) {
 		_ = PackAndSealStream(srcDir, datPath, passphrase)
 	}
 }
+
+type mockExcludeFilter struct {
+	ignoredPatterns []string
+}
+
+func (m *mockExcludeFilter) ShouldIgnore(fullPath, cargoRoot string, isDir bool) bool {
+	clean := filepath.ToSlash(fullPath)
+	for _, p := range m.ignoredPatterns {
+		if strings.Contains(clean, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestPackAndSealWithFilter(t *testing.T) {
+	tempDir := t.TempDir()
+	srcDir := filepath.Join(tempDir, "baihu")
+	_ = os.MkdirAll(filepath.Join(srcDir, "envs", "bin"), 0755)
+	_ = os.MkdirAll(filepath.Join(srcDir, "envs", "lib"), 0755)
+	_ = os.MkdirAll(filepath.Join(srcDir, "src"), 0755)
+
+	_ = os.WriteFile(filepath.Join(srcDir, "main.py"), []byte("print('hello')"), 0644)
+	_ = os.WriteFile(filepath.Join(srcDir, "config.yaml"), []byte("env: prod"), 0644)
+	_ = os.WriteFile(filepath.Join(srcDir, "src", "app.py"), []byte("app = True"), 0644)
+	_ = os.WriteFile(filepath.Join(srcDir, "envs", "bin", "python"), []byte("ELF_BINARY_DATA"), 0755)
+	_ = os.WriteFile(filepath.Join(srcDir, "envs", "lib", "site.py"), []byte("site_packages"), 0644)
+
+	filter := &mockExcludeFilter{ignoredPatterns: []string{"/envs"}}
+	datPath := filepath.Join(tempDir, "baihu.dat")
+	passphrase := []byte("SecureKey123")
+
+	err := PackAndSealSourceStreamWithProgressAndFilter(srcDir, datPath, passphrase, false, nil, filter)
+	if err != nil {
+		t.Fatalf("PackAndSealSourceStreamWithProgressAndFilter failed: %v", err)
+	}
+
+	restoreDir := filepath.Join(tempDir, "restore")
+	if err := UnsealAndUnpackStream(datPath, restoreDir, passphrase); err != nil {
+		t.Fatalf("UnsealAndUnpackStream failed: %v", err)
+	}
+
+	// 验证 main.py 与 src/app.py 必须存在
+	if _, err := os.Stat(filepath.Join(restoreDir, "main.py")); err != nil {
+		t.Errorf("main.py should exist in restored archive")
+	}
+	if _, err := os.Stat(filepath.Join(restoreDir, "src", "app.py")); err != nil {
+		t.Errorf("src/app.py should exist in restored archive")
+	}
+
+	// 验证 envs 及其所有子文件必须被彻底排除！
+	if _, err := os.Stat(filepath.Join(restoreDir, "envs")); err == nil {
+		t.Errorf("envs directory MUST NOT exist in restored archive!")
+	}
+}
+
 

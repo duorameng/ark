@@ -31,11 +31,16 @@ func ScanRootWithOptions(scanRoot string, opts ScanOptions) ([]ScanResult, error
 		return nil, err
 	}
 
-	// 汇总所有排除模式 (外部指定 + .arkignore / .gitignore 文件)
-	filePatterns := LoadIgnorePatterns(scanRoot, opts.IgnoreFile)
-	allExcludes := make([]string, 0, len(opts.Excludes)+len(filePatterns))
-	allExcludes = append(allExcludes, opts.Excludes...)
-	allExcludes = append(allExcludes, filePatterns...)
+	matcher := opts.Matcher
+	if matcher == nil {
+		matcher = NewGitIgnoreMatcher("", scanRoot)
+		if opts.IgnoreFile != "" {
+			matcher.LoadDirRules(filepath.Dir(opts.IgnoreFile))
+		} else {
+			matcher.LoadDirRules(scanRoot)
+		}
+		matcher.AddRules(opts.Excludes)
+	}
 
 	results := make([]ScanResult, 0)
 	usedIDs := make(map[string]bool)
@@ -51,8 +56,8 @@ func ScanRootWithOptions(scanRoot string, opts ScanOptions) ([]ScanResult, error
 			continue
 		}
 
-		// 2. 自定义排除规则检查 (目录与文件均生效)
-		if matched, pattern := MatchExcludePattern(name, fullPath, scanRoot, allExcludes); matched {
+		// 2. 自定义排除规则检查 (目录与文件均生效，对齐 Git 规范)
+		if matched, pattern := matcher.MatchWithReason(fullPath, scanRoot, entry.IsDir()); matched {
 			if !opts.Silent {
 				fmt.Printf("   [过滤排除] 忽略项: %s (匹配规则: %s)\n", name, pattern)
 			}
@@ -86,7 +91,7 @@ func ScanRootWithOptions(scanRoot string, opts ScanOptions) ([]ScanResult, error
 		}
 		usedIDs[id] = true
 
-		score, count, size := evaluateDirectory(fullPath)
+		score, count, size := evaluateDirectory(fullPath, matcher)
 
 		vol := MediumDataLabel
 		if score <= ScoreColdThreshold {
@@ -131,7 +136,7 @@ func ScanRootWithOptions(scanRoot string, opts ScanOptions) ([]ScanResult, error
 	return results, nil
 }
 
-func evaluateDirectory(dirPath string) (score int, count int, size int64) {
+func evaluateDirectory(dirPath string, filter PathFilter) (score int, count int, size int64) {
 	score = PriorityBase
 	hasDB := false
 	hasRecent := false
@@ -142,9 +147,21 @@ func evaluateDirectory(dirPath string) (score int, count int, size int64) {
 			return nil
 		}
 		if info.IsDir() {
+			if path != dirPath {
+				if IsIgnoredRootEntry(info.Name()) {
+					return filepath.SkipDir
+				}
+				if filter != nil && filter.ShouldIgnore(path, dirPath, true) {
+					return filepath.SkipDir
+				}
+			}
 			if IsDatabaseDir(info.Name()) {
 				hasDB = true
 			}
+			return nil
+		}
+
+		if filter != nil && filter.ShouldIgnore(path, dirPath, false) {
 			return nil
 		}
 

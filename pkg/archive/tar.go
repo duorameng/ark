@@ -30,8 +30,18 @@ func ShouldIgnoreDir(name string) bool {
 	return false
 }
 
+// PathFilter 抽象路径过滤匹配器接口 (解耦 rules / gitignore)
+type PathFilter interface {
+	ShouldIgnore(fullPath, cargoRoot string, isDir bool) bool
+}
+
 // WalkAndWriteFilesOnlyTar 仅将 srcDir 下的直接同级文件写入 tar 包 (不递归任何子目录)
 func WalkAndWriteFilesOnlyTar(srcDir string, tw *tar.Writer) error {
+	return WalkAndWriteFilesOnlyTarWithFilter(srcDir, tw, nil)
+}
+
+// WalkAndWriteFilesOnlyTarWithFilter 仅将 srcDir 下的直接同级文件写入 tar 包，支持 PathFilter 排除过滤
+func WalkAndWriteFilesOnlyTarWithFilter(srcDir string, tw *tar.Writer, filter PathFilter) error {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		return err
@@ -49,6 +59,10 @@ func WalkAndWriteFilesOnlyTar(srcDir string, tw *tar.Writer) error {
 		}
 
 		filePath := filepath.Join(srcDir, name)
+		if filter != nil && filter.ShouldIgnore(filePath, srcDir, false) {
+			continue
+		}
+
 		info, err := entry.Info()
 		if err != nil {
 			continue
@@ -109,8 +123,13 @@ func copyFileToTar(tw *tar.Writer, f io.Reader, targetSize int64, copyBuf []byte
 	return nil
 }
 
-// WalkAndWriteTar 遍历 srcDir 并将所有文件与目录写入 tar.Writer，严格保留文件权限与数字 UID/GID
+// WalkAndWriteTar 遍历 srcDir 并将所有文件与目录写入 tar.Writer (兼容老接口)
 func WalkAndWriteTar(srcDir string, tw *tar.Writer) error {
+	return WalkAndWriteTarWithFilter(srcDir, tw, nil)
+}
+
+// WalkAndWriteTarWithFilter 遍历 srcDir 并将所有文件与目录写入 tar.Writer，支持 PathFilter 排除过滤
+func WalkAndWriteTarWithFilter(srcDir string, tw *tar.Writer, filter PathFilter) error {
 	stat, err := os.Stat(srcDir)
 	if err != nil {
 		return err
@@ -120,6 +139,9 @@ func WalkAndWriteTar(srcDir string, tw *tar.Writer) error {
 
 	// 若目标为单个普通文件，直接封装单文件
 	if !stat.IsDir() {
+		if filter != nil && filter.ShouldIgnore(srcDir, srcDir, false) {
+			return nil
+		}
 		hdr, err := tar.FileInfoHeader(stat, "")
 		if err != nil {
 			return err
@@ -149,6 +171,13 @@ func WalkAndWriteTar(srcDir string, tw *tar.Writer) error {
 		if info.IsDir() {
 			if ShouldIgnoreDir(info.Name()) && path != srcDir {
 				return filepath.SkipDir
+			}
+			if filter != nil && filter.ShouldIgnore(path, srcDir, true) {
+				return filepath.SkipDir
+			}
+		} else {
+			if filter != nil && filter.ShouldIgnore(path, srcDir, false) {
+				return nil
 			}
 		}
 

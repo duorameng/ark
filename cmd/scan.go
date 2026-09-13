@@ -53,8 +53,16 @@ func runScan(args []string) {
 		fmt.Printf("[过滤排除] 生效规则: %s\n", strings.Join(allExcludes, ", "))
 	}
 
+	gitMatcher := scanner.NewGitIgnoreMatcher(ws, scanRoot)
+	gitMatcher.LoadDirRules(ws)
+	if scanRoot != ws {
+		gitMatcher.LoadDirRules(scanRoot)
+	}
+	gitMatcher.AddRules(allExcludes)
+
 	opts := scanner.ScanOptions{
 		Excludes: allExcludes,
+		Matcher:  gitMatcher,
 	}
 	results, err := scanner.ScanRootWithOptions(scanRoot, opts)
 	if err != nil {

@@ -245,6 +245,21 @@ func runBoard(args []string, dryRun bool) {
 		needAutoScan = *cliAutoScan
 	}
 
+	// 汇总待备份总目录与工作区
+	scanRoot := resolveBackupDir(ws, "")
+	if stat, err := os.Stat(scanRoot); err != nil || !stat.IsDir() {
+		scanRoot = ws
+	}
+
+	// 初始化 GitIgnore 规则匹配器 (完全遵循 Git 规范)
+	gitMatcher := scanner.NewGitIgnoreMatcher(ws, scanRoot)
+	// 1. 加载 ws 工作区下的 .arkignore / .gitignore (例如 /data/ark/.arkignore)
+	gitMatcher.LoadDirRules(ws)
+	// 2. 加载待备份总目录下的 .arkignore / .gitignore (例如 /data/workspace/.arkignore)
+	if scanRoot != ws {
+		gitMatcher.LoadDirRules(scanRoot)
+	}
+
 	// 汇总所有排除过滤规则
 	mergedExcludesMap := make(map[string]bool)
 	for _, p := range cfg.GetExcludePatterns() {
@@ -260,16 +275,14 @@ func runBoard(args []string, dryRun bool) {
 	for p := range mergedExcludesMap {
 		allExcludes = append(allExcludes, p)
 	}
+	gitMatcher.AddRules(allExcludes)
 
 	// 若启用了自动扫描，自动重新探测待备份目录并动态同步货舱清单
 	if needAutoScan {
-		scanRoot := resolveBackupDir(ws, "")
-		if stat, err := os.Stat(scanRoot); err != nil || !stat.IsDir() {
-			scanRoot = ws
-		}
 		if stat, err := os.Stat(scanRoot); err == nil && stat.IsDir() {
 			opts := scanner.ScanOptions{
 				Excludes: allExcludes,
+				Matcher:  gitMatcher,
 				Silent:   false,
 			}
 			if results, err := scanner.ScanRootWithOptions(scanRoot, opts); err == nil && len(results) > 0 {
@@ -292,10 +305,14 @@ func runBoard(args []string, dryRun bool) {
 	}
 
 	// 应用排除过滤规则到装载清单 (无论是否触发重新扫描，均严格遵守排除规则)
-	if len(allExcludes) > 0 {
+	if len(allExcludes) > 0 || gitMatcher.Count() > 0 {
 		filteredSources := make([]config.Source, 0, len(cfg.Sources))
 		for _, s := range cfg.Sources {
-			if matched, pat := scanner.MatchExcludePattern(s.Name, s.Path, ws, allExcludes); matched {
+			if s.IsRootFiles() {
+				filteredSources = append(filteredSources, s)
+				continue
+			}
+			if matched, pat := gitMatcher.MatchWithReason(s.Path, scanRoot, true); matched {
 				fmt.Printf("   [过滤排除] 忽略舱位: %s (匹配规则: %s)\n", s.Name, pat)
 				continue
 			}
@@ -388,7 +405,18 @@ func runBoard(args []string, dryRun bool) {
 		fmt.Printf("  🔍 [%s] 正在检视货物特征...", displayName)
 		_ = os.Stdout.Sync()
 
-		dirInfo, err := hash.ComputeSourceTreeHash(srcPath, src.IsRootFiles())
+		// 动态装载子项目自身的 .arkignore / .gitignore 并合并全局 GitIgnore 规则
+		cargoMatcher := scanner.NewGitIgnoreMatcher(ws, scanRoot)
+		cargoMatcher.LoadDirRules(ws)
+		if scanRoot != ws {
+			cargoMatcher.LoadDirRules(scanRoot)
+		}
+		if srcPath != ws && srcPath != scanRoot {
+			cargoMatcher.LoadDirRules(srcPath)
+		}
+		cargoMatcher.AddRules(allExcludes)
+
+		dirInfo, err := hash.ComputeSourceTreeHashWithFilter(srcPath, src.IsRootFiles(), cargoMatcher)
 		if err != nil {
 			fmt.Printf("\r  [-] [%s] 扫描目录哈希失败: %v\n", displayName, err)
 			continue
@@ -437,12 +465,12 @@ func runBoard(args []string, dryRun bool) {
 			}
 
 			if cfg.Encrypt {
-				if err := archive.PackAndSealSourceStreamWithProgress(srcPath, layerFile, sealPass, src.IsRootFiles(), onProgress); err != nil {
+				if err := archive.PackAndSealSourceStreamWithProgressAndFilter(srcPath, layerFile, sealPass, src.IsRootFiles(), onProgress, cargoMatcher); err != nil {
 					fmt.Fprintf(os.Stderr, "\n[-] 安全流式打包加密失败: %v\n", err)
 					os.Exit(1)
 				}
 			} else {
-				if err := archive.PackSourceTarGzWithProgress(srcPath, layerFile, src.IsRootFiles(), onProgress); err != nil {
+				if err := archive.PackSourceTarGzWithProgressAndFilter(srcPath, layerFile, src.IsRootFiles(), onProgress, cargoMatcher); err != nil {
 					fmt.Fprintf(os.Stderr, "\n[-] 打包压缩失败: %v\n", err)
 					os.Exit(1)
 				}
