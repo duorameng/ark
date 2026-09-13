@@ -283,9 +283,12 @@ func runBoard(args []string, dryRun bool) {
 			continue
 		}
 
+		displayName := src.Name
+		fmt.Printf("  🔍 [%s] 正在检视货物特征...", displayName)
+
 		dirInfo, err := hash.ComputeSourceTreeHash(srcPath, src.IsRootFiles())
 		if err != nil {
-			fmt.Printf("  [-] 扫描目录哈希失败: %v\n", err)
+			fmt.Printf("\r  [-] [%s] 扫描目录哈希失败: %v\n", displayName, err)
 			continue
 		}
 
@@ -302,12 +305,11 @@ func runBoard(args []string, dryRun bool) {
 			}
 		}
 
-		displayName := src.Name
 		if isCached {
 			fi, _ := os.Stat(layerFile)
-			fmt.Printf("  ✓ [%s] 复用已有集装箱 (%s, 指纹: %s...)\n", displayName, formatBytes(fi.Size()), dirInfo.Hash[:10])
+			fmt.Printf("\r  ✓ [%s] 复用已有集装箱 (%s, 指纹: %s...)                          \n", displayName, formatBytes(fi.Size()), dirInfo.Hash[:10])
 		} else {
-			fmt.Printf("  ⚡ [%s] 货物有变动，开始流式打包加封...\n", displayName)
+			fmt.Printf("\r  ⚡ [%s] 货物有变动，开始流式打包加封...                          \n", displayName)
 			startTime := time.Now()
 			lastUpdate := time.Now()
 			onProgress := func(processed int64) {
@@ -364,10 +366,17 @@ func runBoard(args []string, dryRun bool) {
 			fmt.Fprintf(os.Stderr, "[-] 封装 OCI 单层 Tar 失败: %v\n", err)
 			os.Exit(1)
 		}
-		layerDigest, err := tl.ComputeDigest()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 计算 OCI 分层哈希失败: %v\n", err)
-			os.Exit(1)
+
+		var layerDigest string
+		if isCached && cached.LayerSHA256 != "" {
+			layerDigest = cached.LayerSHA256
+			tl.Digest = layerDigest
+		} else {
+			layerDigest, err = tl.ComputeDigest()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[-] 计算 OCI 分层哈希失败: %v\n", err)
+				os.Exit(1)
+			}
 		}
 
 		layerFiles = append(layerFiles, layerFile)
@@ -559,14 +568,8 @@ func pushSingleTarget(
 		var pushErr error
 		startTime := time.Now()
 		for attempt := 1; attempt <= retryCount; attempt++ {
-			stream, cleanup, sErr := tl.OpenStream()
-			if sErr != nil {
-				pushErr = sErr
-				break
-			}
-
 			var lastReport time.Time
-			pushErr = ociClient.UploadBlobStream(ctx, tl.Digest, tl.TotalSize, stream, func(written int64) {
+			pushErr = ociClient.UploadTarLayer(ctx, tl, func(written int64) {
 				now := time.Now()
 				if now.Sub(lastReport) >= 300*time.Millisecond || written == tl.TotalSize {
 					lastReport = now
@@ -580,7 +583,6 @@ func pushSingleTarget(
 						idx+1, len(tarLayers), tl.FileName, formatBytes(tl.TotalSize), pct, speedMB)
 				}
 			})
-			cleanup()
 
 			if pushErr == nil {
 				fmt.Printf("\r  [%d/%d] 直推成功: %s (%s) ✓ (耗时: %v)                   \n",

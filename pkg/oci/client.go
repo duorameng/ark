@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -50,11 +51,15 @@ func NewClient(fullRepo, username, token string) (*Client, error) {
 		scheme = "http"
 	}
 
+	// 显式禁用 HTTP/2，强制使用成熟稳定的 HTTP/1.1 Keep-Alive 长连接传输
+	// 彻底杜绝 Docker Registry (尤其是 GitHub GHCR / Harbor / CDN 反向代理) 在大 Blob 上传时抛出 PROTOCOL_ERROR 的流重置缺陷
 	transport := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,
+		ForceAttemptHTTP2:   false,
+		TLSNextProto:        make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 	}
 	httpClient := &http.Client{
 		Transport: transport,
@@ -147,6 +152,12 @@ func (c *Client) doRequest(ctx context.Context, req *http.Request, defaultScope 
 	// 4. 使用新获得的 Token 重新构建请求并重试
 	retryReq := req.Clone(ctx)
 	retryReq.Header.Set("Authorization", "Bearer "+token)
+	if req.GetBody != nil {
+		newBody, err := req.GetBody()
+		if err == nil {
+			retryReq.Body = newBody
+		}
+	}
 
 	return c.HTTPClient.Do(retryReq)
 }
@@ -174,6 +185,96 @@ func (c *Client) CheckBlobExists(ctx context.Context, digest string) (bool, erro
 	}
 
 	return false, fmt.Errorf("检测 Blob 状态异常 (HTTP %d)", resp.StatusCode)
+}
+
+// UploadTarLayer 流式直推 TarLayer 到 OCI 注册表，自动配置可重复调取的 GetBody 保证网络抖动与鉴权挑战下的自愈重试
+func (c *Client) UploadTarLayer(ctx context.Context, tl *TarLayer, onProgress func(written int64)) error {
+	scope := fmt.Sprintf("repository:%s:pull,push", c.RepoPath)
+	_ = c.EnsureAuth(ctx, scope)
+
+	// 1. POST /v2/<repo>/blobs/uploads/ 获取上传通道
+	initURL := fmt.Sprintf("%s://%s/v2/%s/blobs/uploads/", c.Scheme, c.RegistryHost, c.RepoPath)
+	postReq, err := http.NewRequestWithContext(ctx, "POST", initURL, nil)
+	if err != nil {
+		return err
+	}
+	postReq.Header.Set("Content-Length", "0")
+
+	postResp, err := c.doRequest(ctx, postReq, scope)
+	if err != nil {
+		return fmt.Errorf("初始化 Blob 上传通道失败: %w", err)
+	}
+	defer postResp.Body.Close()
+
+	if postResp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(postResp.Body)
+		return fmt.Errorf("创建上传通道失败 (HTTP %d): %s", postResp.StatusCode, string(body))
+	}
+
+	location := postResp.Header.Get("Location")
+	if location == "" {
+		return fmt.Errorf("注册表未返回上传 Location 头")
+	}
+
+	uploadURL, err := postResp.Request.URL.Parse(location)
+	if err != nil {
+		return fmt.Errorf("解析上传通道 Location 失败: %w", err)
+	}
+
+	// 2. 追加 digest 参数
+	q := uploadURL.Query()
+	q.Set("digest", tl.Digest)
+	uploadURL.RawQuery = q.Encode()
+
+	// 3. 单次 PUT 上传整个 Blob，配置 GetBody
+	putReq, err := http.NewRequestWithContext(ctx, "PUT", uploadURL.String(), nil)
+	if err != nil {
+		return err
+	}
+	putReq.ContentLength = tl.TotalSize
+	putReq.Header.Set("Content-Type", "application/octet-stream")
+	putReq.Header.Set("Content-Length", fmt.Sprintf("%d", tl.TotalSize))
+
+	var currentCleanup func()
+	putReq.GetBody = func() (io.ReadCloser, error) {
+		if currentCleanup != nil {
+			currentCleanup()
+		}
+		stream, cleanup, err := tl.OpenStream()
+		if err != nil {
+			return nil, err
+		}
+		currentCleanup = cleanup
+		var r io.Reader = stream
+		if onProgress != nil {
+			r = &progressReader{reader: stream, onProgress: onProgress}
+		}
+		return io.NopCloser(r), nil
+	}
+
+	body, err := putReq.GetBody()
+	if err != nil {
+		return err
+	}
+	putReq.Body = body
+	defer func() {
+		if currentCleanup != nil {
+			currentCleanup()
+		}
+	}()
+
+	putResp, err := c.doRequest(ctx, putReq, scope)
+	if err != nil {
+		return fmt.Errorf("推流上传 Blob 失败: %w", err)
+	}
+	defer putResp.Body.Close()
+
+	if putResp.StatusCode != http.StatusCreated && putResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(putResp.Body)
+		return fmt.Errorf("提交 Blob 失败 (HTTP %d): %s", putResp.StatusCode, string(body))
+	}
+
+	return nil
 }
 
 // UploadBlobStream 单次流式上传 Blob 到 OCI Registry (0 落盘，单通道直推)
@@ -231,6 +332,19 @@ func (c *Client) UploadBlobStream(ctx context.Context, digest string, size int64
 	putReq.ContentLength = size
 	putReq.Header.Set("Content-Type", "application/octet-stream")
 	putReq.Header.Set("Content-Length", fmt.Sprintf("%d", size))
+
+	if seeker, ok := stream.(io.ReadSeeker); ok {
+		putReq.GetBody = func() (io.ReadCloser, error) {
+			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+				return nil, err
+			}
+			var r io.Reader = seeker
+			if onProgress != nil {
+				r = &progressReader{reader: seeker, onProgress: onProgress}
+			}
+			return io.NopCloser(r), nil
+		}
+	}
 
 	putResp, err := c.doRequest(ctx, putReq, fmt.Sprintf("repository:%s:pull,push", c.RepoPath))
 	if err != nil {
