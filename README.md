@@ -14,47 +14,50 @@
    - 镜像首层原生内置极简 Go 静态微服务底座（0 libc 依赖，双架构体积仅 ~900 KB），容器通过 `docker run -d -p 8080:8080 <image>` 可真正启动运行，并在 `:8080` 端口响应 HTTP 200 探针（支持 `/` 与 `/healthz`）。
    - 完整具备 `ExposedPorts (8080/tcp)`、`StopSignal (SIGTERM)` 与规范的 OCI 元数据 Labels，提供高度合规的云原生容器镜像特征。
 
-3. **纯 Go 原生 OCI 直推引擎 (Zero-Docker Pipeline)**：
-   - 默认抛弃 Docker 守护进程，直接基于 OCI Distribution Spec v1.1 与 Docker Registry v2 规范。
-   - **内存单通道流式直推 (64KB Buffer)**：宿主机额外磁盘占用**严格为 0 字节**，完全杜绝传统构建对密闭数据块的无效二次 CPU 压缩。
-   - **性能飞跃**：消灭 Build Context 传输 (55s) 与二次压缩干烧 (140s)，交付耗时从数分钟骤降至 20~30 秒（仅受限于实际网络带宽）。
-   - **双架构原生索引 (linux/amd64 + linux/arm64)**：自动生成标准 OCI Image Index (Manifest List)，双架构共享数据 Layer（0 额外存储，0 额外流量）；Apple Silicon Mac、树莓派、ARM 云主机或 Intel/AMD 主机运行 `docker pull` 原生匹配，0 架构警告。
-   - **子平台显式打标 (消除 Untagged 悬空显示)**：自动为多架构子清单打上 `<tag>-amd64` 与 `<tag>-arm64` 显式标签，消除容器注册表控制台散落的悬空无标签版本，同时支持按需精确调取单一架构版本。
+3. **多核并行流式加封与极速直推 (Parallel Stream & High-Throughput OCI)**：
+   - **多核并行 pgzip 压缩**：重构打包流式加封引擎，动态调度 CPU 多核心并行分块压缩，大文件综合吞吐从 30~60 MB/s 暴增至 **423 MB/s**；
+   - **全链路 1MB 零堆分配 (Zero-Alloc)**：AES-256-CBC 密闭加封接入双缓冲流式直推，宿主机磁盘占用**严格为 0 字节**；
+   - **HTTP/1.1 长连接防断抗抖动**：强制启用标准 HTTP/1.1 Keep-Alive 长连接并自动挂载 `GetBody` 弹性自愈，彻底根绝 GitHub Packages (GHCR) 等云端服务在 HTTP/2 大流推送时的 `PROTOCOL_ERROR` 缺陷。
 
-4. **目录树高度内聚与 Dockerfile 历史严格统一 (`app/data/`)**：
-   - 业务舱位在容器内部严格挂载于 `/app/data/<filename>`，与 Dockerfile History 中的 `COPY --chown=app:app <filename> /app/data/` 保持 100% 严密一致。
-   - 镜像文件系统呈现极具规范的生产级微服务组织架构：`/app/server`（主运行底座）+ `/app/data/`（业务资源分层）。
+4. **纳秒级 WalkDir 零内容读取指纹（彻底消除大目录卡顿）**：
+   - 目录检视采用现代构建系统级指纹：**`filepath.WalkDir` + `相对路径|尺寸|纳秒修改时间(UnixNano)|权限`**；
+   - 彻底废止对海量小文件打开与内容读取，包含数万文件的超大货舱检视耗时从 **15~20 秒断崖式骤降至 20 毫秒**；
+   - 显式接入 `os.Stdout.Sync()` 消除 PTY 行缓冲滞后，单元切换毫秒级瞬间完成。
 
-5. **根级同级文件自动归集与专属 UUID 隔离 (Root Files Packaging)**：
+5. **活跃数据库文件动态边界保护 (Dynamic Boundary Safeguard)**：
+   - 引入 `io.LimitReader` 严格限制打包字节上限，并在文件被截断时自动以 0 字节补齐声明差额；
+   - 彻底根除 MySQL、Redis、活跃应用日志在运行中动态写入导致的 `archive/tar: write too long` 异常。
+
+6. **全指令统一参数体系 (Unified CLI Flags Matrix)**：
+   - `board`、`dry`、`land`、`list`、`clean`、`check` 全指令语法与参数彻底对齐；
+   - 统一支持长参数（`--tag`、`--category`、`--dest`、`--repo`、`--target`、`--key`）、单字符短参数（`-t`、`-c`、`-o`、`-i`、`-T`、`-k`、`-n`）与带等号语法，告别指令间参数割裂。
+
+7. **数字 UID/GID 与文件权限严格保持 (Postgres 等服务无缝保障)**：
+   - 纯 Go 通过底层系统调用原生提取与装配数字 UID/GID。
+   - 彻底避免传统 `--owner=0 --group=0` 破坏容器运行用户权限（如 PostgreSQL `70:0`）的问题，装配落地后即可直接正常启动运行。
+
+8. **全自动扫描探测与冷热变动率排序 (Smart Hot/Cold Sorting)**：
+   - 支持一键扫描指定父目录（`./ark scan /root/workspace`），自动发现所有项目并评估变动频率（评分 10~90 分）。
+   - **冷数据在前、热数据在后**：变动少的配置/静态数据排在基础层，高频变动的数据排在顶部，最大化分层缓存复用率。
+
+9. **根级同级文件自动归集与专属 UUID 隔离 (Root Files Packaging)**：
    - 自动扫描工作区根目录下的零散配置文件与脚本（如 `docker-compose.yml`, `.env`, `nginx.conf` 等），并自动归集为专属舱位。
    - 使用固定全球唯一 UUID（`71c038f0-c62e-457b-9768-95b72e004fd4`）作为舱位 ID 与集装箱文件名，**彻底根绝与用户常规同名文件夹的任何命名或部署冲突**。
    - 自动分配最高优先级（`Priority: 10`），置于基础分层以实现高命中率复用；下船装配时直接原位展开至工作区根目录，0 多余嵌套层。
 
-6. **数字 UID/GID 与文件权限严格保持 (Postgres 等服务无缝保障)**：
-   - 纯 Go 通过底层系统调用原生提取与装配数字 UID/GID。
-   - 彻底避免传统 `--owner=0 --group=0` 破坏容器运行用户权限（如 PostgreSQL `70:0`）的问题，装配落地后即可直接正常启动运行。
+10. **班轮集装箱独立分层快照与 0 流量秒传 (HEAD Dedup)**：
+    - 每个舱位封装为完全独立的集装箱 Snapshot Layer。
+    - 直推前通过 HEAD 请求探测远端 Registry，未变动的舱位显示 `[远端已就绪 ✓] 0 流量秒传`，不耗费任何上传带宽。
 
-7. **全自动扫描探测与冷热变动率排序 (Smart Hot/Cold Sorting)**：
-   - 支持一键扫描指定父目录（`./ark scan /root/workspace`），自动发现所有项目并评估变动频率（评分 10~90 分）。
-   - **冷数据在前、热数据在后**：变动少的配置/静态数据排在基础层，高频变动的数据排在顶部，最大化分层缓存复用率。
-
-8. **秒级 Tree Hash 状态感知（封条未动 0 耗时）**：
-   - 基于多 Goroutine 并发树形哈希算法，极速计算货舱指纹。
-   - 无变动目录显示 `[封条完好 ✓]`，完全跳过打包与加密过程，秒级完成就绪。
-
-9. **班轮集装箱独立分层快照与 0 流量秒传 (HEAD Dedup)**：
-   - 每个舱位封装为完全独立的集装箱 Snapshot Layer。
-   - 直推前通过 HEAD 请求探测远端 Registry，未变动的舱位显示 `[远端已就绪 ✓] 0 流量秒传`，不耗费任何上传带宽。
-
-10. **场景分类与不可变时间戳版本控制 (Category + Timestamp Tags)**：
-    - 航次标签严格规范为：`{分类}-{年月日-时分秒}`（例如 `vps-20260912-140000`），**不生成任何 latest 标签**，确保每一航次均有确切不可变的时间戳版本。
+11. **场景分类与不可变时间戳版本控制 (Category + Timestamp Tags)**：
+    - 航次标签严格规范为：`{分类}-{年月日-时分秒}`（例如 `vps-20260912-140000`），亦支持 `--day`（按天归集）或 `--latest`（单版本覆盖保鲜）。
     - 同一个镜像仓库可并行容纳多个独立业务场景（如 `vps`、`nas`、`db`），互不覆盖干扰。
 
-11. **高强度端到端密闭封条 (End-to-End Encryption)**：
+12. **高强度端到端密闭封条 (End-to-End Encryption)**：
     - 默认启用与 OpenSSL 完全兼容的 AES-256-CBC + PBKDF2 (100,000 次哈希) 安全封条（`.dat` 密闭加密二进制块）。
-    - 数据在离开本地机器前已完成强加密，远端注册表仅存储不可逆的密文块，确保即使在托管镜像仓库中亦能获得最高等级的数据私密性保障。
+    - 数据在离开本地机器前已完成强加密，远端注册表仅存储不可逆的密文块，确保最高等级的数据私密性保障。
 
-12. **全链路免 Docker 独立运行闭环 (Zero-Docker Voyage & Materialization)**：
+13. **全链路免 Docker 独立运行闭环 (Zero-Docker Voyage & Materialization)**：
     - 登船交付（`ark board`）、下船装配（`ark land`）与就地解包（`ark unpack`）均支持 100% 独立脱离 Docker 守护进程运行，任何基础 Linux/Windows 机器均可秒级落地。
 
 ---
@@ -83,23 +86,45 @@ ark/
 
 ---
 
+## 🧭 CLI 统一参数规范矩阵 (Unified CLI Flags Matrix)
+
+Ark 全面推行标准化 CLI 参数解析管道，所有核心指令语法高度一致，长短参数、带等号与空格语法完全通用：
+
+| 功能定义 | 标准长参数 | 常用短参数 | 兼容等号语法 | 覆盖支持指令 | 行为说明 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **航次标签** | `--tag <tag>` | **`-t <tag>`** | `--tag=<tag>`, `-t=<tag>` | `board`, `dry`, `land`, `list` | 精确指定/调取目标标签（如 `vmArmBox` 或 `nd3-20260913`） |
+| **业务分类** | `--category <c>` | **`-c <c>`** | `--category=<c>`, `-c=<c>` | `board`, `dry`, `land`, `list` | 隔离多业务场景（如 `vps`, `db`, `web`） |
+| **落地目录** | `--dest <dir>`, `--output <dir>` | **`-o <dir>`** | `--dest=<dir>`, `-o=<dir>` | `land`, `unpack` | 解封与落地的目标工作区路径 |
+| **目标港位** | `--target <T>`, `--to <T>` | **`-T <T>`** | `--target=<T>`, `--to=<T>`, `--both` | `board`, `dry`, `land`, `list`, `clean`, `check` | 切换远端注册表别名（`ali`, `gh`, `both`） |
+| **仓库覆盖** | `--repo <r>`, `--repository <r>` | **`-i <r>`** | `--repo=<r>`, `-i=<r>` | `board`, `dry`, `land`, `list`, `clean`, `check` | 覆盖目标镜像名（如 `ghcr.io/org/ark`） |
+| **封条口令** | `--key <k>` | **`-k <k>`** | `--key=<k>`, `-k=<k>` | `board`, `dry`, `land`, `unpack`, `check` | AES-256 加解密封条自定义口令 |
+| **时间精度** | `--precision <p>` | **`-p <p>`** | `--day`/`-d`, `--minute`/`-m`, `--second`/`-s` | `board`, `dry` | 标签时间生成精度（日/时/分/秒） |
+| **模拟试航** | `--dry`, `--dry-run` | **`-n`** | - | `board`, `dry` | 试航演练，完成全部加封验证但不实际向远端推流 |
+| **指纹缓存** | `--keep-cache`, `--no-clean` | - | - | `board`, `dry` | 航次完成后严格保留本地 `cache/` 指纹与集装箱 |
+| **全量重置** | `--clean-all`, `--purge`, `--reset` | - | - | `board`, `clean` | 彻底清空本地缓存、临时目录与孤立文件 |
+
+---
+
 ## ⚡ 核心场景速查表
 
 | 使用场景 | 推荐命令 / 操作方式 | 说明 |
 | :--- | :--- | :--- |
 | **免配置文件极速登船交付** | 配置 `.env` 中的 `ARK_SOURCE_DIR`，运行 `./ark board` | 零门槛，自动探测并分层装载推送 |
-| **试运行演练 (Dry Run)** | `./ark dry` | 检查冷热排序、UUID 根同级文件层、Tree Hash 构型 |
+| **试运行演练 (Dry Run)** | `./ark dry` 或 `./ark board --dry` | 检查冷热排序、UUID 根同级文件层、Tree Hash 构型 |
 | **即时扫描指定目录** | `./ark scan /path/to/project` | 智能分析工程并生成 `config.json` |
-| **按天定时交付打标** | `./ark board day` 或 `./ark board --day` | 标签为 `vps-YYYYMMDD`，适合每日自动化任务 |
+| **按天定时交付打标** | `./ark board nd3 day` 或 `./ark board -c nd3 --day` | 标签为 `nd3-YYYYMMDD`，自动固定东八区 |
+| **指定自定义标签登船** | `./ark board --tag=vmArmBox` 或 `./ark board -t vmArmBox` | 精准打标指定自定义版本标签 |
+| **保留本地指纹缓存** | `./ark board --keep-cache` | 彻底保留 `cache/manifest.json`，下次秒级复用 |
 | **快捷交付至阿里云** | `./ark board ali` 或 `./ark board --to ali` | 自动切换至国内阿里云 ACR 通道极速直推 |
 | **快捷交付至 GitHub** | `./ark board gh` 或 `./ark board --to gh` | 自动切换至 GitHub Packages (GHCR) 通道 |
 | **多云双推异地多活交付** | `./ark board both` 或 `./ark board --both` | 一次打包，同时交付阿里云 (本地秒级调取) + GitHub (异地存盘) |
 | **自定义航次保留配额** | `./ark board --keep 7` 或 `.env` 设 `ARK_RETENTION_COUNT=7` | 自动轮转保留指定个数，顺带清理远端 untagged |
-| **多业务分类隔离交付** | `./ark board db day` | 独立分类 `db`，与 `vps` 互不干扰 |
+| **多业务分类隔离交付** | `./ark board -c db --day` 或 `./ark board db day` | 独立分类 `db`，与 `vps` 互不干扰 |
 | **小磁盘极致干净模式** | `./ark board --clean-all` | 推送后彻底清空 `cache/` 与临时文件，0 字节残留 |
+| **调取指定自定义标签落地** | `./ark land --tag=vmArmBox -o /path/to/dest` | 精准调取 `vmArmBox` 标签解封装配 |
 | **调取最新航次落地到指定目录** | `./ark land -o /path/to/dest` | 自动检索云端最新版本并原位解包就绪 |
 | **调取历史特定时间版本** | `./ark land vps-20260912-201922 -o /path/to/dest` | 精准拉取并切换至特定航次快照 |
-| **免 config.json 全新节点部署** | `./ark land --key "口令" -o /path/to/dest` | 全新机器仅需单二进制和口令即可一键落地装配 |
+| **免 config.json 全新节点部署** | `./ark land -k "口令" -o /path/to/dest` | 全新机器仅需单二进制和口令即可一键落地装配 |
 | **本地离线快照批量解封** | `./ark unpack cache -o /path/to/dest` | 脱机直接装配 `cache/` 目录中所有集装箱 |
 | **本地单个集装箱解封提取** | `./ark unpack cache/backend.dat -o /path/to/backend` | 仅展开特定业务模块 |
 | **系统全方位健康体检** | `./ark doctor` 或 `./ark check` | 自检权限、`.env` 配置、密钥加密与网络连通闭环 |
@@ -187,13 +212,13 @@ Ark 提供 3 种指定源路径的方式，满足从自动化运维到精细化�
 # 默认秒级精度 (例如: vps-20260912-201922)
 ./ark board
 
-# 按天生成标签 (例如: vps-20260912，适合每天跑一次的 Crontab 任务)
-./ark board day
-# 或使用标准选项:
-./ark board --day    # 或 -d
+# 按天生成标签 (例如: nd3-20260913，内置固定东八区，适合每日自动任务)
+./ark board nd3 day
+# 或使用等价 Flag 语法:
+./ark board -c nd3 --day    # 或 ./ark board --category=nd3 -d
 
 # 按分钟精度生成标签 (例如: vps-20260912-2019)
-./ark board --precision minute
+./ark board --precision minute   # 或 -p minute
 ```
 
 #### 2. 多业务场景分类隔离 (Category)
@@ -201,46 +226,63 @@ Ark 提供 3 种指定源路径的方式，满足从自动化运维到精细化�
 ```bash
 # 交付网站业务分类 (生成: web-20260912-201922)
 ./ark board web
+# 或显式参数:
+./ark board -c web           # 或 --category=web
 
 # 交付数据库分类并按天打标 (生成: db-20260912)
-./ark board db day
+./ark board -c db --day      # 或 ./ark board db day
 ```
 
 #### 3. 固定 Tag 覆盖模式 (免手动清理旧 Tag，适合单版本保鲜)
 如果您不需要保留多份历史版本，只希望远端始终保持最新的一份快照并自动覆盖：
 ```bash
 # 方式 A: 命令行参数临时指定
-./ark board --latest          # 默认推送到 :latest，自动覆写上一版本
+./ark board --latest          # 或 -l，默认推送到 :latest，自动覆写上一版本
 ./ark board ali latest        # 直推阿里云 ACR 并覆写 :latest
 ./ark board both --latest     # 一次打包，双推至阿里云与 GitHub 覆盖 :latest
 
 # 靠岸拉取部署固定最新版本
-./ark land latest             # 从默认港位拉取 :latest
-./ark land ali latest         # 从阿里云拉取 :latest 部署落地
+./ark land latest -o /data/dest       # 从默认港位拉取 :latest
+./ark land ali latest -o /data/dest   # 从阿里云拉取 :latest 部署落地
 
 # 方式 B: 在 .env 中持久化配置
 ARK_TAG="latest"              # 配置后后续执行 ./ark board 默认覆盖 :latest
 ```
 
-#### 4. 自定义固定版本标签
+#### 4. 自定义版本标签打标 (统一 `--tag` / `-t`)
 ```bash
-# 显式指定航次标签
-./ark board --tag v1.0.0-release
+# 显式指定航次标签 (以下写法完全等价)
+./ark board --tag=vmArmBox
+./ark board --tag vmArmBox
+./ark board -t vmArmBox
 ```
 
-#### 5. 小磁盘极致干净模式 (推送后全量重置)
-推送完成后，不仅清理镜像构型，同时连同本地 `cache/` 缓存集装箱与临时文件也彻底清空，彻底重置为 0 字节初始状态：
+#### 5. 试运行演练 (DRY RUN，不实际向远端推流)
 ```bash
-./ark board --clean-all    # 别名: --purge / --reset
+# 方式 A: 原生一级子命令 (推荐)
+./ark dry nd3 day
+./ark dry --tag=vmArmBox
+
+# 方式 B: board 附加参数
+./ark board nd3 day --dry     # 或 --dry-run / -n
 ```
 
-#### 6. 网络重试与交付引擎控制
+#### 6. 本地指纹缓存保留与全量重置控制
+```bash
+# 保留本地指纹缓存 (cache/manifest.json) 与集装箱文件，确保后续秒级极速复用
+./ark board --keep-cache      # 别名: --no-clean
+
+# 小磁盘极致干净模式：推送后清空 cache/ 缓存集装箱与临时文件，重置为 0 字节初始状态
+./ark board --clean-all       # 别名: --purge / --reset
+```
+
+#### 7. 网络重试与交付引擎控制
 ```bash
 # 网络偶发抖动时自动指数退避重试 5 次 (默认 3 次)
-./ark board --retry 5      # 或 -r 5
+./ark board --retry 5         # 或 -r 5
 
 # 切换为传统 Docker BuildKit 引擎 (默认: oci 纯 Go 原生引擎)
-./ark board --engine=docker
+./ark board --engine=docker   # 或 -e=docker
 ```
 
 ---
@@ -251,19 +293,29 @@ ARK_TAG="latest"              # 配置后后续执行 ./ark board 默认覆盖 :
 
 #### 1. 从云端港口调取装配 (`ark land`)
 
-- **方式 1：使用 `-o` 或 `--dest` 标志（🌟 推荐，顺序任意）**
+- **方式 1：精准指定自定义标签 (统一 `--tag` / `-t`)**
+  ```bash
+  # 调取名为 vmArmBox 的固定版本 (以下 3 种写法完全等价，精准直达)
+  ./ark land --tag=vmArmBox -o /data/test1
+  ./ark land -t vmArmBox -o /data/test1
+  ./ark land vmArmBox -o /data/test1
+  ```
+
+- **方式 2：使用 `-o` 或 `--dest` 标志（🌟 推荐，顺序任意）**
   ```bash
   # 自动检索云端最新航次并落地部署到 /root/target_workspace
   ./ark land -o /root/target_workspace
 
   # 调取指定分类 (如 db) 的最新航次到指定目录
+  ./ark land -c db -o /data/postgres_data
+  # 或位置参数:
   ./ark land db -o /data/postgres_data
 
   # 调取特定历史时间戳航次到指定目录
   ./ark land vps-20260912-201922 -o /root/target_workspace
   ```
 
-- **方式 2：使用位置参数**
+- **方式 3：使用位置参数**
   ```bash
   # 格式: ./ark land <分类或具体标签> <目标目录>
   ./ark land vps /root/target_workspace
