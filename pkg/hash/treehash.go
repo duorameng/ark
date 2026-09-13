@@ -53,7 +53,8 @@ func ComputeSourceTreeHash(dirPath string, filesOnly bool) (*DirInfo, error) {
 		}
 		defer f.Close()
 		h := sha256.New()
-		if _, err := io.Copy(h, f); err != nil {
+		buf := make([]byte, 512*1024)
+		if _, err := io.CopyBuffer(h, f, buf); err != nil {
 			return nil, err
 		}
 		return &DirInfo{
@@ -140,6 +141,7 @@ func ComputeSourceTreeHash(dirPath string, filesOnly bool) (*DirInfo, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			buf := make([]byte, 512*1024)
 			for t := range taskCh {
 				h := sha256.New()
 				f, err := os.Open(t.fullPath)
@@ -147,7 +149,7 @@ func ComputeSourceTreeHash(dirPath string, filesOnly bool) (*DirInfo, error) {
 					resCh <- fileResult{err: err}
 					continue
 				}
-				_, err = io.Copy(h, f)
+				_, err = io.CopyBuffer(h, f, buf)
 				f.Close()
 				if err != nil {
 					resCh <- fileResult{err: err}

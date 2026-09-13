@@ -2,6 +2,7 @@ package archive
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -142,3 +143,95 @@ func TestFilesOnlyPackAndUnpack(t *testing.T) {
 		t.Errorf("expected sub_service to NOT exist in files_only bundle")
 	}
 }
+
+func TestPackAndSealWithProgress(t *testing.T) {
+	tempDir := t.TempDir()
+	srcDir := filepath.Join(tempDir, "src")
+	_ = os.MkdirAll(srcDir, 0755)
+
+	content := make([]byte, 500*1024) // 500KB
+	for i := range content {
+		content[i] = byte(i % 256)
+	}
+	_ = os.WriteFile(filepath.Join(srcDir, "test.dat"), content, 0644)
+
+	var reported int64
+	callbackCount := 0
+	progressCb := func(processed int64) {
+		reported = processed
+		callbackCount++
+	}
+
+	passphrase := []byte("ProgressTest2026")
+	datPath := filepath.Join(tempDir, "sealed.dat")
+
+	if err := PackAndSealSourceStreamWithProgress(srcDir, datPath, passphrase, false, progressCb); err != nil {
+		t.Fatalf("PackAndSealSourceStreamWithProgress failed: %v", err)
+	}
+
+	if callbackCount == 0 || reported < int64(len(content)) {
+		t.Errorf("expected progress callback to report >= %d bytes, got %d (callbacks: %d)", len(content), reported, callbackCount)
+	}
+
+	unpackDir := filepath.Join(tempDir, "unpacked")
+	if err := UnsealAndUnpackStream(datPath, unpackDir, passphrase); err != nil {
+		t.Fatalf("UnsealAndUnpackStream failed: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(unpackDir, "test.dat"))
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("content corrupted after progress-tracked pack/unpack")
+	}
+}
+
+func BenchmarkPackAndSealStream(b *testing.B) {
+	tempDir := b.TempDir()
+	srcDir := filepath.Join(tempDir, "src")
+	_ = os.MkdirAll(srcDir, 0755)
+
+	// 生成 300 个 100KB 伪随机数据文件 (共 30MB)
+	chunk := make([]byte, 100*1024)
+	for i := range chunk {
+		chunk[i] = byte((i*31 + 17) % 256)
+	}
+	for i := 0; i < 300; i++ {
+		chunk[0] = byte(i)
+		chunk[1] = byte(i >> 8)
+		_ = os.WriteFile(filepath.Join(srcDir, fmt.Sprintf("file_%04d.dat", i)), chunk, 0644)
+	}
+
+	passphrase := []byte("BenchmarkPassword2026")
+	datPath := filepath.Join(tempDir, "out.dat")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = PackAndSealStream(srcDir, datPath, passphrase)
+	}
+}
+
+func BenchmarkLargeMixedPackAndSeal(b *testing.B) {
+	tempDir := b.TempDir()
+	srcDir := filepath.Join(tempDir, "src")
+	_ = os.MkdirAll(srcDir, 0755)
+
+	// 1. 生成 25MB 高压缩率文本数据 (模拟 SQL/日志)
+	textChunk := bytes.Repeat([]byte("INSERT INTO `large_table` VALUES (1001, 'Ark High Throughput Test Record 2026', NOW(), 'abcdefghijklmnopqrstuvwxyz');\n"), 250000)
+	_ = os.WriteFile(filepath.Join(srcDir, "dump.sql"), textChunk, 0644)
+
+	// 2. 生成 25MB 伪随机二进制文件 (模拟已压缩数据/媒体)
+	binChunk := make([]byte, 25*1024*1024)
+	for i := range binChunk {
+		binChunk[i] = byte((i*37 + 19) % 256)
+	}
+	_ = os.WriteFile(filepath.Join(srcDir, "archive.bin"), binChunk, 0644)
+
+	passphrase := []byte("LargeBenchmarkPass2026")
+	datPath := filepath.Join(tempDir, "out_large.dat")
+
+	b.ResetTimer()
+	b.SetBytes(int64(len(textChunk) + len(binChunk)))
+	for i := 0; i < b.N; i++ {
+		_ = PackAndSealStream(srcDir, datPath, passphrase)
+	}
+}
+

@@ -3,12 +3,13 @@ package archive
 import (
 	"archive/tar"
 	"bufio"
-	"compress/gzip"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/klauspost/pgzip"
 )
 
 // DefaultIgnoredDirs 默认跳过的目录列表
@@ -35,6 +36,8 @@ func WalkAndWriteFilesOnlyTar(srcDir string, tw *tar.Writer) error {
 	if err != nil {
 		return err
 	}
+
+	copyBuf := make([]byte, 1024*1024)
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -66,11 +69,11 @@ func WalkAndWriteFilesOnlyTar(srcDir string, tw *tar.Writer) error {
 		if err != nil {
 			return err
 		}
-		if _, err := io.Copy(tw, f); err != nil {
-			f.Close()
-			return err
-		}
+		_, copyErr := io.CopyBuffer(tw, f, copyBuf)
 		f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
 	}
 	return nil
 }
@@ -81,6 +84,8 @@ func WalkAndWriteTar(srcDir string, tw *tar.Writer) error {
 	if err != nil {
 		return err
 	}
+
+	copyBuf := make([]byte, 1024*1024)
 
 	// 若目标为单个普通文件，直接封装单文件
 	if !stat.IsDir() {
@@ -97,8 +102,8 @@ func WalkAndWriteTar(srcDir string, tw *tar.Writer) error {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		_, err = io.Copy(tw, f)
+		_, err = io.CopyBuffer(tw, f, copyBuf)
+		f.Close()
 		return err
 	}
 
@@ -156,10 +161,9 @@ func WalkAndWriteTar(srcDir string, tw *tar.Writer) error {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-
-		_, err = io.Copy(tw, f)
-		return err
+		_, copyErr := io.CopyBuffer(tw, f, copyBuf)
+		f.Close()
+		return copyErr
 	})
 }
 
@@ -193,6 +197,7 @@ func UnpackTarStream(r io.Reader, destDir string) error {
 	}
 
 	dirList := make([]dirMetadata, 0, 128)
+	copyBuf := make([]byte, 1024*1024)
 
 	for {
 		hdr, err := tr.Next()
@@ -236,7 +241,7 @@ func UnpackTarStream(r io.Reader, destDir string) error {
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(outFile, tr); err != nil {
+			if _, err := io.CopyBuffer(outFile, tr, copyBuf); err != nil {
 				outFile.Close()
 				return err
 			}
@@ -279,7 +284,7 @@ func UnpackTar(tarPath, destDir string) error {
 	br := bufio.NewReader(f)
 	magic, _ := br.Peek(2)
 	if len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
-		gr, err := gzip.NewReader(br)
+		gr, err := pgzip.NewReader(br)
 		if err != nil {
 			return err
 		}

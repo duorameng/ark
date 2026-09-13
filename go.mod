@@ -1,5 +1,10 @@
 module ark
 
-go 1.23.0
+go 1.25
 
-require golang.org/x/crypto v0.35.0
+require (
+	github.com/klauspost/pgzip v1.2.6
+	golang.org/x/crypto v0.35.0
+)
+
+require github.com/klauspost/compress v1.20.0 // indirect

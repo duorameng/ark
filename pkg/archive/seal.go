@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bufio"
 	"bytes"
-	"compress/gzip"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -13,7 +12,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
+	"strconv"
 
+	"github.com/klauspost/pgzip"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -225,46 +227,125 @@ type cbcStreamWriter struct {
 	mode      cipher.BlockMode
 	blockSize int
 	buf       []byte
+	bufLen    int
+	encBuf    []byte
 }
 
 func newCBCStreamWriter(w io.Writer, block cipher.Block, iv []byte) *cbcStreamWriter {
+	bs := block.BlockSize()
+	capacity := 512 * 1024
 	return &cbcStreamWriter{
 		w:         w,
 		mode:      cipher.NewCBCEncrypter(block, iv),
-		blockSize: block.BlockSize(),
-		buf:       make([]byte, 0, 64*1024),
+		blockSize: bs,
+		buf:       make([]byte, capacity),
+		bufLen:    0,
+		encBuf:    make([]byte, capacity),
 	}
 }
 
 func (sw *cbcStreamWriter) Write(p []byte) (int, error) {
-	sw.buf = append(sw.buf, p...)
-	overflow := len(sw.buf) % sw.blockSize
-	toEncryptLen := len(sw.buf) - overflow
-	if toEncryptLen > 0 {
-		outBuf := make([]byte, toEncryptLen)
-		sw.mode.CryptBlocks(outBuf, sw.buf[:toEncryptLen])
-		if _, err := sw.w.Write(outBuf); err != nil {
-			return 0, err
+	total := len(p)
+	for len(p) > 0 {
+		avail := len(sw.buf) - sw.bufLen
+		if avail > len(p) {
+			avail = len(p)
 		}
-		remaining := make([]byte, overflow)
-		copy(remaining, sw.buf[toEncryptLen:])
-		sw.buf = remaining
+		copy(sw.buf[sw.bufLen:], p[:avail])
+		sw.bufLen += avail
+		p = p[avail:]
+
+		// 当缓冲区足够大时，集中批量加密并输出，零堆内存分配
+		if sw.bufLen >= len(sw.buf)-sw.blockSize {
+			encryptable := sw.bufLen - (sw.bufLen % sw.blockSize)
+			if encryptable > 0 {
+				sw.mode.CryptBlocks(sw.encBuf[:encryptable], sw.buf[:encryptable])
+				if _, err := sw.w.Write(sw.encBuf[:encryptable]); err != nil {
+					return 0, err
+				}
+				remainder := sw.bufLen - encryptable
+				if remainder > 0 {
+					copy(sw.buf[:remainder], sw.buf[encryptable:sw.bufLen])
+				}
+				sw.bufLen = remainder
+			}
+		}
 	}
-	return len(p), nil
+	return total, nil
 }
 
 func (sw *cbcStreamWriter) Close() error {
-	padded := pkcs7Pad(sw.buf, sw.blockSize)
+	encryptable := sw.bufLen - (sw.bufLen % sw.blockSize)
+	if encryptable > 0 {
+		sw.mode.CryptBlocks(sw.encBuf[:encryptable], sw.buf[:encryptable])
+		if _, err := sw.w.Write(sw.encBuf[:encryptable]); err != nil {
+			return err
+		}
+		remainder := sw.bufLen - encryptable
+		if remainder > 0 {
+			copy(sw.buf[:remainder], sw.buf[encryptable:sw.bufLen])
+		}
+		sw.bufLen = remainder
+	}
+
+	padded := pkcs7Pad(sw.buf[:sw.bufLen], sw.blockSize)
 	outBuf := make([]byte, len(padded))
 	sw.mode.CryptBlocks(outBuf, padded)
 	_, err := sw.w.Write(outBuf)
-	sw.buf = nil
+	sw.bufLen = 0
 	return err
 }
 
-// PackAndSealSourceStream 将指定源边打包 (Tar) -> 边压缩 (Gzip) -> 边加密 (AES-256) 写入 destDatPath
-// 全程内存流式流水线直达，磁盘零中间临时文件，支持 filesOnly 同级文件打包
-func PackAndSealSourceStream(srcDir, destDatPath string, passphrase []byte, filesOnly bool) error {
+func resolveGzipLevel() int {
+	level := pgzip.BestSpeed
+	if envLvl := os.Getenv("ARK_GZIP_LEVEL"); envLvl != "" {
+		if l, err := strconv.Atoi(envLvl); err == nil && l >= -1 && l <= 9 {
+			level = l
+		}
+	}
+	return level
+}
+
+// newParallelGzipWriter 创建针对多核优化的高吞吐分块并行 Gzip 写入器
+func newParallelGzipWriter(w io.Writer) (*pgzip.Writer, error) {
+	level := resolveGzipLevel()
+	gw, err := pgzip.NewWriterLevel(w, level)
+	if err != nil {
+		return nil, err
+	}
+	// 针对多核机器优化并发分块 (每块 1MB，根据 CPU 核心数动态匹配并发度)
+	numCPU := runtime.NumCPU()
+	blocks := numCPU * 2
+	if blocks < 4 {
+		blocks = 4
+	}
+	if blocks > 32 {
+		blocks = 32
+	}
+	_ = gw.SetConcurrency(1024*1024, blocks)
+	return gw, nil
+}
+
+// ProgressCallback 进度通知函数，接收已处理的未压缩源字节数
+type ProgressCallback func(processedBytes int64)
+
+type countingWriter struct {
+	w        io.Writer
+	written  int64
+	callback ProgressCallback
+}
+
+func (cw *countingWriter) Write(p []byte) (int, error) {
+	n, err := cw.w.Write(p)
+	cw.written += int64(n)
+	if cw.callback != nil {
+		cw.callback(cw.written)
+	}
+	return n, err
+}
+
+// PackAndSealSourceStreamWithProgress 将指定源边打包 (Tar) -> 边压缩 (Gzip) -> 边加密 (AES-256) 写入 destDatPath，支持进度回调
+func PackAndSealSourceStreamWithProgress(srcDir, destDatPath string, passphrase []byte, filesOnly bool, onProgress ProgressCallback) error {
 	salt := make([]byte, saltLen)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return err
@@ -292,9 +373,20 @@ func PackAndSealSourceStream(srcDir, destDatPath string, passphrase []byte, file
 		return err
 	}
 
-	encWriter := newCBCStreamWriter(out, block, iv)
-	gw := gzip.NewWriter(encWriter)
-	tw := tar.NewWriter(gw)
+	bw := bufio.NewWriterSize(out, 1024*1024)
+	encWriter := newCBCStreamWriter(bw, block, iv)
+	gw, err := newParallelGzipWriter(encWriter)
+	if err != nil {
+		return err
+	}
+
+	var tw *tar.Writer
+	if onProgress != nil {
+		cw := &countingWriter{w: gw, callback: onProgress}
+		tw = tar.NewWriter(cw)
+	} else {
+		tw = tar.NewWriter(gw)
+	}
 
 	var walkErr error
 	if filesOnly {
@@ -312,8 +404,17 @@ func PackAndSealSourceStream(srcDir, destDatPath string, passphrase []byte, file
 	if err := encWriter.Close(); err != nil && walkErr == nil {
 		walkErr = err
 	}
+	if err := bw.Flush(); err != nil && walkErr == nil {
+		walkErr = err
+	}
 
 	return walkErr
+}
+
+// PackAndSealSourceStream 将指定源边打包 (Tar) -> 边压缩 (Gzip) -> 边加密 (AES-256) 写入 destDatPath
+// 全程内存流式流水线直达，磁盘零中间临时文件，支持 filesOnly 同级文件打包
+func PackAndSealSourceStream(srcDir, destDatPath string, passphrase []byte, filesOnly bool) error {
+	return PackAndSealSourceStreamWithProgress(srcDir, destDatPath, passphrase, filesOnly, nil)
 }
 
 // PackAndSealStream 将指定源目录边打包 (Tar) -> 边压缩 (Gzip) -> 边加密 (AES-256) 写入 destDatPath
@@ -321,16 +422,27 @@ func PackAndSealStream(srcDir, destDatPath string, passphrase []byte) error {
 	return PackAndSealSourceStream(srcDir, destDatPath, passphrase, false)
 }
 
-// PackSourceTarGz 将指定源边打包边 gzip 压缩写入 destTarGzPath
-func PackSourceTarGz(srcDir, destTarGzPath string, filesOnly bool) error {
+// PackSourceTarGzWithProgress 将指定源边打包边 gzip 压缩写入 destTarGzPath，支持进度回调
+func PackSourceTarGzWithProgress(srcDir, destTarGzPath string, filesOnly bool, onProgress ProgressCallback) error {
 	out, err := os.Create(destTarGzPath)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
-	gw := gzip.NewWriter(out)
-	tw := tar.NewWriter(gw)
+	bw := bufio.NewWriterSize(out, 1024*1024)
+	gw, err := newParallelGzipWriter(bw)
+	if err != nil {
+		return err
+	}
+
+	var tw *tar.Writer
+	if onProgress != nil {
+		cw := &countingWriter{w: gw, callback: onProgress}
+		tw = tar.NewWriter(cw)
+	} else {
+		tw = tar.NewWriter(gw)
+	}
 
 	var walkErr error
 	if filesOnly {
@@ -345,7 +457,15 @@ func PackSourceTarGz(srcDir, destTarGzPath string, filesOnly bool) error {
 	if err := gw.Close(); err != nil && walkErr == nil {
 		walkErr = err
 	}
+	if err := bw.Flush(); err != nil && walkErr == nil {
+		walkErr = err
+	}
 	return walkErr
+}
+
+// PackSourceTarGz 将指定源边打包边 gzip 压缩写入 destTarGzPath
+func PackSourceTarGz(srcDir, destTarGzPath string, filesOnly bool) error {
+	return PackSourceTarGzWithProgress(srcDir, destTarGzPath, filesOnly, nil)
 }
 
 // PackTarGz 将指定源目录边打包边 gzip 压缩写入 destTarGzPath
@@ -439,8 +559,8 @@ func UnsealAndUnpackStream(srcDatPath, destDir string, passphrase []byte) error 
 	br := bufio.NewReader(pr)
 	magic, _ := br.Peek(2)
 	if len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
-		// Gzip 压缩流，创建 gzip.Reader 实时解压
-		gr, err := gzip.NewReader(br)
+		// Gzip 压缩流，创建 pgzip.Reader 实时多核解压
+		gr, err := pgzip.NewReader(br)
 		if err != nil {
 			return fmt.Errorf("Gzip 解压初始化失败: %w", err)
 		}

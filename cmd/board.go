@@ -308,20 +308,55 @@ func runBoard(args []string, dryRun bool) {
 			fmt.Printf("  ✓ [%s] 复用已有集装箱 (%s, 指纹: %s...)\n", displayName, formatBytes(fi.Size()), dirInfo.Hash[:10])
 		} else {
 			fmt.Printf("  ⚡ [%s] 货物有变动，开始流式打包加封...\n", displayName)
+			startTime := time.Now()
+			lastUpdate := time.Now()
+			onProgress := func(processed int64) {
+				now := time.Now()
+				if now.Sub(lastUpdate) < 100*time.Millisecond {
+					return
+				}
+				lastUpdate = now
+				elapsed := now.Sub(startTime).Seconds()
+				if elapsed <= 0.001 {
+					elapsed = 0.001
+				}
+				speedMB := float64(processed) / (1024 * 1024) / elapsed
+				if dirInfo.TotalBytes > 0 {
+					pct := float64(processed) * 100 / float64(dirInfo.TotalBytes)
+					if pct > 100 {
+						pct = 100
+					}
+					fmt.Printf("\r    ⏳ [%s] 正在处理: %s / %s (%.0f%%, %.1f MB/s)   ", displayName, formatBytes(processed), formatBytes(dirInfo.TotalBytes), pct, speedMB)
+				} else {
+					fmt.Printf("\r    ⏳ [%s] 正在处理: %s (%.1f MB/s)   ", displayName, formatBytes(processed), speedMB)
+				}
+			}
+
 			if cfg.Encrypt {
-				if err := archive.PackAndSealSourceStream(srcPath, layerFile, sealPass, src.IsRootFiles()); err != nil {
-					fmt.Fprintf(os.Stderr, "[-] 安全流式打包加密失败: %v\n", err)
+				if err := archive.PackAndSealSourceStreamWithProgress(srcPath, layerFile, sealPass, src.IsRootFiles(), onProgress); err != nil {
+					fmt.Fprintf(os.Stderr, "\n[-] 安全流式打包加密失败: %v\n", err)
 					os.Exit(1)
 				}
 			} else {
-				if err := archive.PackSourceTarGz(srcPath, layerFile, src.IsRootFiles()); err != nil {
-					fmt.Fprintf(os.Stderr, "[-] 打包压缩失败: %v\n", err)
+				if err := archive.PackSourceTarGzWithProgress(srcPath, layerFile, src.IsRootFiles(), onProgress); err != nil {
+					fmt.Fprintf(os.Stderr, "\n[-] 打包压缩失败: %v\n", err)
 					os.Exit(1)
 				}
 			}
 
+			duration := time.Since(startTime)
 			fi, _ := os.Stat(layerFile)
-			fmt.Printf("    └─ 装箱完毕: %s (%s)\n", filepath.Base(layerFile), formatBytes(fi.Size()))
+			elapsedSec := duration.Seconds()
+			if elapsedSec <= 0.001 {
+				elapsedSec = 0.001
+			}
+			avgSpeed := float64(dirInfo.TotalBytes) / (1024 * 1024) / elapsedSec
+			if dirInfo.TotalBytes == 0 && fi != nil {
+				avgSpeed = float64(fi.Size()) / (1024 * 1024) / elapsedSec
+			}
+
+			durStr := duration.Round(10 * time.Millisecond).String()
+			fmt.Printf("\r    └─ 装箱完毕: %s (%s, 耗时 %s, 均速 %.1f MB/s)                          \n", filepath.Base(layerFile), formatBytes(fi.Size()), durStr, avgSpeed)
 		}
 
 		tl, err := oci.NewTarLayer(layerFile)
