@@ -344,6 +344,23 @@ func (cw *countingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+type countingReader struct {
+	r        io.Reader
+	read     int64
+	callback ProgressCallback
+}
+
+func (cr *countingReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	if n > 0 {
+		cr.read += int64(n)
+		if cr.callback != nil {
+			cr.callback(cr.read)
+		}
+	}
+	return n, err
+}
+
 // PackAndSealSourceStreamWithProgress 将指定源边打包 (Tar) -> 边压缩 (Gzip) -> 边加密 (AES-256) 写入 destDatPath，支持进度回调
 func PackAndSealSourceStreamWithProgress(srcDir, destDatPath string, passphrase []byte, filesOnly bool, onProgress ProgressCallback) error {
 	salt := make([]byte, saltLen)
@@ -476,6 +493,11 @@ func PackTarGz(srcDir, destTarGzPath string) error {
 // UnsealAndUnpackStream 从加密文件流式读取并解密 (AES-256) -> 解压 (Gzip) -> 展开 (Tar)
 // 零临时 tar 解密文件落盘，并自动智能兼容 gzip 与旧版未压缩 raw tar！
 func UnsealAndUnpackStream(srcDatPath, destDir string, passphrase []byte) error {
+	return UnsealAndUnpackStreamWithProgress(srcDatPath, destDir, passphrase, nil)
+}
+
+// UnsealAndUnpackStreamWithProgress 从加密文件流式读取并解密 (AES-256) -> 解压 (Gzip) -> 展开 (Tar)，支持进度通知
+func UnsealAndUnpackStreamWithProgress(srcDatPath, destDir string, passphrase []byte, onProgress ProgressCallback) error {
 	in, err := os.Open(srcDatPath)
 	if err != nil {
 		return err
@@ -509,6 +531,7 @@ func UnsealAndUnpackStream(srcDatPath, destDir string, passphrase []byte) error 
 		bufSize := 512 * 1024
 		buf := make([]byte, bufSize)
 		var prevPlain []byte
+		var totalRead int64 = int64(len(header))
 
 		for {
 			n, readErr := io.ReadFull(in, buf)
@@ -516,6 +539,10 @@ func UnsealAndUnpackStream(srcDatPath, destDir string, passphrase []byte) error 
 				if n%blockSize != 0 {
 					pw.CloseWithError(errors.New("密文数据长度非分组块整数倍"))
 					return
+				}
+				totalRead += int64(n)
+				if onProgress != nil {
+					onProgress(totalRead)
 				}
 				if len(prevPlain) > 0 {
 					if _, err := pw.Write(prevPlain); err != nil {
@@ -556,7 +583,7 @@ func UnsealAndUnpackStream(srcDatPath, destDir string, passphrase []byte) error 
 		pw.Close()
 	}()
 
-	br := bufio.NewReader(pr)
+	br := bufio.NewReaderSize(pr, 1024*1024)
 	magic, _ := br.Peek(2)
 	if len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
 		// Gzip 压缩流，创建 pgzip.Reader 实时多核解压

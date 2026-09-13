@@ -63,11 +63,45 @@ func runUnpack(args []string) {
 		modName := strings.TrimSuffix(fname, filepath.Ext(fname))
 		modName = strings.TrimSuffix(modName, ".tar")
 		if destDir == "" {
-			destDir = filepath.Join(ws, fmt.Sprintf("cargo_restored_%s", modName))
+			destDir = filepath.Join(ws, fmt.Sprintf("cargo_delivered_%s", modName))
 		}
 
-		fmt.Printf("[目标] 单集装箱: %s\n", targetPath)
-		fmt.Printf("[交付] 恢复目录: %s\n", destDir)
+		fSizeStr := formatBytes(stat.Size())
+		fileTotalSize := stat.Size()
+		fmt.Printf("[目标] 单集装箱: %s (%s)\n", targetPath, fSizeStr)
+		fmt.Printf("[交付] 归位目录: %s\n", destDir)
+
+		unpackStart := time.Now()
+		lastUnpackUpdate := time.Now()
+		actionName := "开封解密还原"
+		if !archive.IsEncryptedArchive(fname) {
+			actionName = "解包还原"
+		}
+
+		onUnpackProgress := func(processed int64) {
+			now := time.Now()
+			if now.Sub(lastUnpackUpdate) < 100*time.Millisecond && (fileTotalSize <= 0 || processed < fileTotalSize) {
+				return
+			}
+			lastUnpackUpdate = now
+			elapsed := now.Sub(unpackStart).Seconds()
+			if elapsed <= 0.001 {
+				elapsed = 0.001
+			}
+			speedMB := float64(processed) / (1024 * 1024) / elapsed
+			if fileTotalSize > 0 {
+				pct := float64(processed) * 100 / float64(fileTotalSize)
+				if pct > 100 {
+					pct = 100
+				}
+				fmt.Printf("\r   ⏳ 正在%s: %s / %s (%.1f%%, %.1f MB/s)   ",
+					actionName, formatBytes(processed), formatBytes(fileTotalSize), pct, speedMB)
+			} else {
+				fmt.Printf("\r   ⏳ 正在%s: %s (%.1f MB/s)   ",
+					actionName, formatBytes(processed), speedMB)
+			}
+			_ = os.Stdout.Sync()
+		}
 
 		if archive.IsEncryptedArchive(fname) {
 			if len(sealPass) == 0 {
@@ -75,25 +109,39 @@ func runUnpack(args []string) {
 				os.Exit(1)
 			}
 			fmt.Printf("-> 正在开启安全封条并流式还原 (%s -> %s, 零中间解密文件落盘)...\n", fname, destDir)
-			if err := archive.UnsealAndUnpackStream(targetPath, destDir, sealPass); err != nil {
-				fmt.Fprintf(os.Stderr, "[-] 解封还原失败: %v\n", err)
+			_ = os.Stdout.Sync()
+			if err := archive.UnsealAndUnpackStreamWithProgress(targetPath, destDir, sealPass, onUnpackProgress); err != nil {
+				fmt.Fprintf(os.Stderr, "\n[-] 解封还原失败: %v\n", err)
 				os.Exit(1)
 			}
 		} else {
-			fmt.Printf("-> 正在还原舱位货物到 %s (保留 UID/GID 数字所有者与权限)...\n", destDir)
-			if err := archive.UnpackTar(targetPath, destDir); err != nil {
-				fmt.Fprintf(os.Stderr, "[-] 还原解包失败: %v\n", err)
+			fmt.Printf("-> 正在展开舱位货物到 %s (保留 UID/GID 数字所有者与权限)...\n", destDir)
+			_ = os.Stdout.Sync()
+			if err := archive.UnpackTarWithProgress(targetPath, destDir, onUnpackProgress); err != nil {
+				fmt.Fprintf(os.Stderr, "\n[-] 展开解包失败: %v\n", err)
 				os.Exit(1)
 			}
 		}
-		fmt.Printf("✓ 舱位 [%s] 货物已完整归位！\n", modName)
+
+		unpackDur := time.Since(unpackStart).Round(10 * time.Millisecond)
+		elapsedSec := time.Since(unpackStart).Seconds()
+		if elapsedSec <= 0.001 {
+			elapsedSec = 0.001
+		}
+		avgSpeed := float64(fileTotalSize) / (1024 * 1024) / elapsedSec
+		speedStr := ""
+		if fileTotalSize > 0 {
+			speedStr = fmt.Sprintf(", 均速 %.1f MB/s", avgSpeed)
+		}
+		fmt.Printf("\r   ✓ 舱位 [%s] 货物已完整归位！(体积: %s, 耗时 %s%s)                          \n", modName, fSizeStr, unpackDur, speedStr)
+		_ = os.Stdout.Sync()
 	} else {
 		// 整个 cache 目录解封
 		if destDir == "" {
-			destDir = filepath.Join(ws, "cargo_restored_all")
+			destDir = filepath.Join(ws, "cargo_delivered_all")
 		}
 		fmt.Printf("[目标] 集装箱仓库: %s\n", targetPath)
-		fmt.Printf("[交付] 批量恢复目录: %s\n", destDir)
+		fmt.Printf("[交付] 批量归位目录: %s\n", destDir)
 
 		folderNameMap := make(map[string]string)
 		sourceMap := make(map[string]config.Source)
@@ -134,6 +182,45 @@ func runUnpack(args []string) {
 				targetSubDir = destDir
 			}
 			fullFile := filepath.Join(targetPath, fname)
+			fi, _ := os.Stat(fullFile)
+			fSizeStr := ""
+			var fileTotalSize int64
+			if fi != nil {
+				fSizeStr = formatBytes(fi.Size())
+				fileTotalSize = fi.Size()
+			}
+
+			unpackStart := time.Now()
+			lastUnpackUpdate := time.Now()
+			actionName := "开封解密还原"
+			if !archive.IsEncryptedArchive(fname) {
+				actionName = "解包还原"
+			}
+
+			onUnpackProgress := func(processed int64) {
+				now := time.Now()
+				if now.Sub(lastUnpackUpdate) < 100*time.Millisecond && (fileTotalSize <= 0 || processed < fileTotalSize) {
+					return
+				}
+				lastUnpackUpdate = now
+				elapsed := now.Sub(unpackStart).Seconds()
+				if elapsed <= 0.001 {
+					elapsed = 0.001
+				}
+				speedMB := float64(processed) / (1024 * 1024) / elapsed
+				if fileTotalSize > 0 {
+					pct := float64(processed) * 100 / float64(fileTotalSize)
+					if pct > 100 {
+						pct = 100
+					}
+					fmt.Printf("\r   ⏳ 正在%s: %s / %s (%.1f%%, %.1f MB/s)   ",
+						actionName, formatBytes(processed), formatBytes(fileTotalSize), pct, speedMB)
+				} else {
+					fmt.Printf("\r   ⏳ 正在%s: %s (%.1f MB/s)   ",
+						actionName, formatBytes(processed), speedMB)
+				}
+				_ = os.Stdout.Sync()
+			}
 
 			if archive.IsEncryptedArchive(fname) {
 				if len(sealPass) == 0 {
@@ -141,34 +228,48 @@ func runUnpack(args []string) {
 					continue
 				}
 				if isRootFiles {
-					fmt.Printf("-> 正在开启安全封条并原位展开根级同级文件 (%s -> %s)...\n", fname, destDir)
+					fmt.Printf("-> 正在开启安全封条并原位展开根级同级文件: %s (%s) -> %s...\n", fname, fSizeStr, destDir)
 				} else {
-					fmt.Printf("-> 正在开启安全封条并流式还原 (%s -> %s, 零中间解密文件落盘)...\n", fname, targetSubDir)
+					fmt.Printf("-> 正在开启安全封条并流式还原: %s (%s) -> %s (零中间解密文件落盘)...\n", fname, fSizeStr, targetSubDir)
 				}
-				if err := archive.UnsealAndUnpackStream(fullFile, targetSubDir, sealPass); err != nil {
-					fmt.Printf("[-] 解封 %s 失败: %v\n", fname, err)
+				_ = os.Stdout.Sync()
+				if err := archive.UnsealAndUnpackStreamWithProgress(fullFile, targetSubDir, sealPass, onUnpackProgress); err != nil {
+					fmt.Printf("\n[-] 解封 %s 失败: %v\n", fname, err)
 					continue
 				}
 			} else {
 				if isRootFiles {
-					fmt.Printf("-> 正在解包并原位展开根级同级文件至 %s...\n", destDir)
+					fmt.Printf("-> 正在解包并原位展开根级同级文件: %s (%s) -> %s...\n", fname, fSizeStr, destDir)
 				} else {
-					fmt.Printf("-> 正在还原舱位货物 [%s] 到 %s...\n", folderName, targetSubDir)
+					fmt.Printf("-> 正在展开舱位货物 [%s] (%s) 到 %s...\n", folderName, fSizeStr, targetSubDir)
 				}
-				if err := archive.UnpackTar(fullFile, targetSubDir); err != nil {
-					fmt.Printf("[-] 还原 %s 失败: %v\n", folderName, err)
+				_ = os.Stdout.Sync()
+				if err := archive.UnpackTarWithProgress(fullFile, targetSubDir, onUnpackProgress); err != nil {
+					fmt.Printf("\n[-] 展开 %s 失败: %v\n", folderName, err)
 					continue
 				}
 			}
-			if isRootFiles {
-				fmt.Println("   ✓ 根级同级配置文件与脚本已成功原位展开归位！")
-			} else {
-				fmt.Printf("   ✓ 舱位 [%s] 货物已完整归位！\n", folderName)
+
+			unpackDur := time.Since(unpackStart).Round(10 * time.Millisecond)
+			elapsedSec := time.Since(unpackStart).Seconds()
+			if elapsedSec <= 0.001 {
+				elapsedSec = 0.001
 			}
+			avgSpeed := float64(fileTotalSize) / (1024 * 1024) / elapsedSec
+			speedStr := ""
+			if fileTotalSize > 0 {
+				speedStr = fmt.Sprintf(", 均速 %.1f MB/s", avgSpeed)
+			}
+			if isRootFiles {
+				fmt.Printf("\r   ✓ 根级同级配置文件与脚本已成功原位展开归位！(体积: %s, 耗时 %s%s)                          \n", fSizeStr, unpackDur, speedStr)
+			} else {
+				fmt.Printf("\r   ✓ 舱位 [%s] 货物已完整归位！(体积: %s, 耗时 %s%s)                          \n", folderName, fSizeStr, unpackDur, speedStr)
+			}
+			_ = os.Stdout.Sync()
 		}
 	}
 
 	fmt.Println("\n================================================================")
-	fmt.Printf("          🎉 解封还原圆满完成，全部货物已归位: %s\n", destDir)
+	fmt.Printf("          🎉 解封交付圆满完成，全部货物已归位: %s\n", destDir)
 	fmt.Println("================================================================")
 }

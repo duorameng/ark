@@ -306,13 +306,23 @@ func UnpackTarStream(r io.Reader, destDir string) error {
 
 // UnpackTar 将 tar 或 tar.gz 文件解压到 destDir，自动识别是否含有 gzip 压缩 (严格恢复原始文件权限与数字所有者)
 func UnpackTar(tarPath, destDir string) error {
+	return UnpackTarWithProgress(tarPath, destDir, nil)
+}
+
+// UnpackTarWithProgress 将 tar 或 tar.gz 文件解压到 destDir，支持实时进度与速率回调
+func UnpackTarWithProgress(tarPath, destDir string, onProgress ProgressCallback) error {
 	f, err := os.Open(tarPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	br := bufio.NewReader(f)
+	var r io.Reader = f
+	if onProgress != nil {
+		r = &countingReader{r: f, callback: onProgress}
+	}
+
+	br := bufio.NewReaderSize(r, 1024*1024)
 	magic, _ := br.Peek(2)
 	if len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
 		gr, err := pgzip.NewReader(br)

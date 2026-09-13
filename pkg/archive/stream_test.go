@@ -176,13 +176,57 @@ func TestPackAndSealWithProgress(t *testing.T) {
 	}
 
 	unpackDir := filepath.Join(tempDir, "unpacked")
-	if err := UnsealAndUnpackStream(datPath, unpackDir, passphrase); err != nil {
-		t.Fatalf("UnsealAndUnpackStream failed: %v", err)
+	var unpackReported int64
+	unpackCbCount := 0
+	unpackProgressCb := func(processed int64) {
+		unpackReported = processed
+		unpackCbCount++
+	}
+
+	if err := UnsealAndUnpackStreamWithProgress(datPath, unpackDir, passphrase, unpackProgressCb); err != nil {
+		t.Fatalf("UnsealAndUnpackStreamWithProgress failed: %v", err)
+	}
+
+	if unpackCbCount == 0 || unpackReported <= 0 {
+		t.Errorf("expected unseal progress callback to report > 0 bytes, got %d (callbacks: %d)", unpackReported, unpackCbCount)
 	}
 
 	got, err := os.ReadFile(filepath.Join(unpackDir, "test.dat"))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("content corrupted after progress-tracked pack/unpack")
+	}
+}
+
+func TestUnpackTarWithProgress(t *testing.T) {
+	tempDir := t.TempDir()
+	srcDir := filepath.Join(tempDir, "src")
+	_ = os.MkdirAll(srcDir, 0755)
+
+	content := []byte("Hello UnpackTarWithProgress Test Data 2026")
+	_ = os.WriteFile(filepath.Join(srcDir, "hello.txt"), content, 0644)
+
+	tarGzPath := filepath.Join(tempDir, "archive.tar.gz")
+	if err := PackTarGz(srcDir, tarGzPath); err != nil {
+		t.Fatalf("PackTarGz failed: %v", err)
+	}
+
+	destDir := filepath.Join(tempDir, "dest")
+	var reported int64
+	cbCount := 0
+	if err := UnpackTarWithProgress(tarGzPath, destDir, func(processed int64) {
+		reported = processed
+		cbCount++
+	}); err != nil {
+		t.Fatalf("UnpackTarWithProgress failed: %v", err)
+	}
+
+	if cbCount == 0 || reported <= 0 {
+		t.Errorf("expected unpack progress callback to fire, got %d bytes, %d calls", reported, cbCount)
+	}
+
+	got, err := os.ReadFile(filepath.Join(destDir, "hello.txt"))
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("content mismatch in UnpackTarWithProgress")
 	}
 }
 
