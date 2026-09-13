@@ -149,3 +149,21 @@ func TestScanRootWithExcludeFilter(t *testing.T) {
 		t.Errorf("service_keep should be preserved in scan results")
 	}
 }
+
+func TestPrintScanSummaryVisualAlignment(t *testing.T) {
+	// 使用用户遇到的错位真实数据集
+	results := []ScanResult{
+		{Source: config.Source{ID: "watchover", Priority: 10, Path: "/data/workspace/watchover"}, Volatility: "极少变动 (冷数据)", FileCount: 1, TotalSize: 317},
+		{Source: config.Source{ID: "root_files", Priority: 10, Path: "/data/workspace", FilesOnly: true}, Volatility: "极少变动 (根级同级文件)", FileCount: 4, TotalSize: 10445},
+		{Source: config.Source{ID: "ddns", Priority: 50, Path: "/data/workspace/ddns"}, Volatility: "中频变动", FileCount: 4, TotalSize: 2765},
+		{Source: config.Source{ID: "mysql_sql", Priority: 50, Path: "/data/workspace/mysql_sql"}, Volatility: "中频变动", FileCount: 1, TotalSize: 58600000},
+		{Source: config.Source{ID: "cups_web", Priority: 70, Path: "/data/workspace/cups-web"}, Volatility: "频繁变动 (热数据)", FileCount: 23, TotalSize: 454246},
+		{Source: config.Source{ID: "ovn", Priority: 70, Path: "/data/workspace/ovn"}, Volatility: "频繁变动 (热数据)", FileCount: 3, TotalSize: 173363},
+		{Source: config.Source{ID: "baihu", Priority: 90, Path: "/data/workspace/baihu"}, Volatility: "频繁变动 (热数据)", FileCount: 2670, TotalSize: 859783168},
+		{Source: config.Source{ID: "mysql80", Priority: 90, Path: "/data/workspace/mysql80"}, Volatility: "频繁变动 (热数据)", FileCount: 215, TotalSize: 2576980378},
+		{Source: config.Source{ID: "yyb_wxcode", Priority: 90, Path: "/data/workspace/yyb-wxcode"}, Volatility: "频繁变动 (热数据)", FileCount: 30, TotalSize: 208486},
+	}
+
+	PrintScanSummary(results)
+}
+

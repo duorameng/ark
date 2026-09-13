@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"ark/pkg/config"
+	"ark/pkg/format"
 )
 
 // ScanResult 包含扫描评估信息
@@ -201,39 +203,35 @@ func evaluateDirectory(dirPath string, filter PathFilter) (score int, count int,
 
 // FormatBytes 将字节数转换为人类友好的可读字符串
 func FormatBytes(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+	return format.FormatBytes(b)
 }
 
-// PrintScanSummary 美化打印扫描结果表格
+// PrintScanSummary 美化打印扫描结果表格 (自动感知 CJK 字符真实视觉列宽，保证 100% 垂直对齐)
 func PrintScanSummary(results []ScanResult) {
-	fmt.Printf("%-20s %-12s %-22s %-8s %-10s %s\n", "舱位 ID", "装载优先级", "冷热变动特征", "文件数", "预估大小", "路径")
-	fmt.Println(strings.Repeat("-", 95))
+	tbl := format.NewTable("舱位 ID", "装载优先级", "冷热变动特征", "文件数", "预估大小", "路径")
+	tbl.SetSpacing(3)
+	tbl.SetAlignment(3, format.AlignRight) // 文件数右对齐更工整
+	tbl.SetAlignment(4, format.AlignRight) // 预估大小右对齐更工整
+
 	for _, r := range results {
 		displayID := fmt.Sprintf("[%s]", r.Source.ID)
 		if r.Source.IsRootFiles() || r.Source.ID == config.DefaultRootFilesID {
 			displayID = "[root_files]"
-		} else if len(displayID) > 20 {
-			displayID = displayID[:17] + "...]"
+		} else if len(displayID) > 25 {
+			displayID = displayID[:21] + "...]"
 		}
 
-		fmt.Printf("%-20s %-12s %-22s %-8d %-10s %s\n",
+		tbl.AddRow(
 			displayID,
 			fmt.Sprintf("优先级: %d", r.Source.Priority),
 			r.Volatility,
-			r.FileCount,
+			strconv.Itoa(r.FileCount),
 			FormatBytes(r.TotalSize),
 			r.Source.Path,
 		)
 	}
-	fmt.Println(strings.Repeat("-", 95))
+
+	fmt.Print(tbl.Render())
 	fmt.Println("【排序策略说明】：数值小的静态舱位排前优先复用，数值大的高频变动舱位排后，最大化 OCI / Docker 缓存命中率！")
 }
+

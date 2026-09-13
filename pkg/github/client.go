@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"ark/pkg/format"
 	"ark/pkg/timezone"
 )
 
@@ -283,7 +285,7 @@ func (c *Client) PruneCategoryVersions(category string, retentionCount int) erro
 	return nil
 }
 
-// PrintCategoryVersions 表格打印航次列表
+// PrintCategoryVersions 表格打印航次列表 (自动感知 CJK 字符真实视觉列宽，保证 100% 垂直对齐)
 func (c *Client) PrintCategoryVersions(categoryFilter string) error {
 	versions, err := c.ListVersions()
 	if err != nil {
@@ -295,9 +297,9 @@ func (c *Client) PrintCategoryVersions(categoryFilter string) error {
 		return nil
 	}
 
-	fmt.Println()
-	fmt.Printf("%-10s %-28s %-24s %s\n", "分类", "航次标签 (Tag)", "创建日期 (UTC+8 / CST)", "版本 ID")
-	fmt.Println(strings.Repeat("-", 80))
+	tbl := format.NewTable("分类", "航次标签 (Tag)", "创建日期 (UTC+8 / CST)", "版本 ID")
+	tbl.SetSpacing(3)
+	tbl.SetAlignment(3, format.AlignRight)
 
 	count := 0
 	for _, ver := range versions {
@@ -306,18 +308,29 @@ func (c *Client) PrintCategoryVersions(categoryFilter string) error {
 				parts := strings.SplitN(tag, "-", 2)
 				cat := parts[0]
 				if categoryFilter == "" || categoryFilter == cat {
-					fmt.Printf("%-10s %-28s %-24s %d\n",
+					tbl.AddRow(
 						fmt.Sprintf("[%s]", cat),
 						tag,
 						timezone.FormatDefault(ver.CreatedAt),
-						ver.ID,
+						strconv.FormatInt(ver.ID, 10),
 					)
 					count++
 				}
 			}
 		}
 	}
-	fmt.Println(strings.Repeat("-", 80))
+
+	if count == 0 {
+		if categoryFilter != "" {
+			fmt.Printf("[-] 未找到分类为 [%s] 的航次记录。\n", categoryFilter)
+		} else {
+			fmt.Println("[-] 未找到符合条件的航次记录。")
+		}
+		return nil
+	}
+
+	fmt.Println()
+	fmt.Print(tbl.Render())
 	fmt.Printf("共找到 %d 个匹配的航次记录。\n", count)
 	return nil
 }
