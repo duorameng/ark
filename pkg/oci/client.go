@@ -2,6 +2,7 @@ package oci
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -464,15 +465,19 @@ func (c *Client) DownloadBlobAndExtractCargo(ctx context.Context, digest, outDir
 		return fmt.Errorf("下载 Blob 失败 (HTTP %d): %s", resp.StatusCode, string(body))
 	}
 
-	var reader io.Reader = resp.Body
+	var srcReader io.Reader = resp.Body
 	if onProgress != nil {
-		reader = &progressReader{
+		srcReader = &progressReader{
 			reader:     resp.Body,
 			onProgress: onProgress,
 		}
 	}
 
-	tr := tar.NewReader(reader)
+	// 挂载 1MB 预读缓冲区加速网络数据流接收并减少 socket 系统调用
+	bufReader := bufio.NewReaderSize(srcReader, 1024*1024)
+	tr := tar.NewReader(bufReader)
+	copyBuf := make([]byte, 1024*1024)
+
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -493,9 +498,15 @@ func (c *Client) DownloadBlobAndExtractCargo(ctx context.Context, digest, outDir
 			if err != nil {
 				return fmt.Errorf("创建解包目标文件失败: %w", err)
 			}
-			if _, err := io.Copy(f, tr); err != nil {
+			bw := bufio.NewWriterSize(f, 1024*1024)
+			if _, err := io.CopyBuffer(bw, tr, copyBuf); err != nil {
+				bw.Flush()
 				f.Close()
 				return fmt.Errorf("写入解包目标文件失败: %w", err)
+			}
+			if err := bw.Flush(); err != nil {
+				f.Close()
+				return fmt.Errorf("刷新解包目标文件失败: %w", err)
 			}
 			f.Close()
 		}

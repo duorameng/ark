@@ -178,17 +178,77 @@ func runLand(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("✓ 成功获取清单，包含 %d 个分层，开始流式调取与提取...\n", len(mf.Layers))
+	totCargoSize := int64(0)
+	validCargoCount := 0
+	for _, l := range mf.Layers {
+		if !oci.IsCamouflageDigest(l.Digest) {
+			totCargoSize += l.Size
+			validCargoCount++
+		}
+	}
+	fmt.Printf("✓ 成功获取班轮清单: 共 %d 个分层 (业务货舱: %d 个 | 总载重: %s)，开始流式调取与提取...\n",
+		len(mf.Layers), validCargoCount, formatBytes(totCargoSize))
+
 	for idx, l := range mf.Layers {
 		if oci.IsCamouflageDigest(l.Digest) {
-			fmt.Printf("-> 识别到微服务伪装运行底座 [%d/%d] (指纹: %s...)，自动跳过还原\n", idx+1, len(mf.Layers), l.Digest[:19])
+			fmt.Printf("-> 识别到微服务伪装运行底座 [%d/%d] (体积: %s, 指纹: %s...)，自动跳过还原\n",
+				idx+1, len(mf.Layers), formatBytes(l.Size), l.Digest[:19])
 			continue
 		}
-		fmt.Printf("-> 正在流式提取货舱分层 [%d/%d] (指纹: %s...)\n", idx+1, len(mf.Layers), l.Digest[:19])
-		if err := ociClient.DownloadBlobAndExtractCargo(ctx, l.Digest, tmpLandDir, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 提取货舱分层失败: %v\n", err)
+
+		layerSize := l.Size
+		shortDigest := l.Digest
+		if len(shortDigest) > 19 {
+			shortDigest = shortDigest[:19]
+		}
+
+		startTime := time.Now()
+		lastUpdate := time.Now()
+
+		fmt.Printf("-> 正在流式调取货舱分层 [%d/%d] (体积: %s, 指纹: %s...)\n",
+			idx+1, len(mf.Layers), formatBytes(layerSize), shortDigest)
+		_ = os.Stdout.Sync()
+
+		onProgress := func(written int64) {
+			now := time.Now()
+			if now.Sub(lastUpdate) < 100*time.Millisecond && (layerSize <= 0 || written < layerSize) {
+				return
+			}
+			lastUpdate = now
+			elapsed := now.Sub(startTime).Seconds()
+			if elapsed <= 0.001 {
+				elapsed = 0.001
+			}
+			speedMB := float64(written) / (1024 * 1024) / elapsed
+			if layerSize > 0 {
+				pct := float64(written) * 100 / float64(layerSize)
+				if pct > 100 {
+					pct = 100
+				}
+				fmt.Printf("\r   ⏳ [%d/%d] 正在接收流式货舱: %s / %s (%.1f%%, %.1f MB/s)   ",
+					idx+1, len(mf.Layers), formatBytes(written), formatBytes(layerSize), pct, speedMB)
+			} else {
+				fmt.Printf("\r   ⏳ [%d/%d] 正在接收流式货舱: %s (%.1f MB/s)   ",
+					idx+1, len(mf.Layers), formatBytes(written), speedMB)
+			}
+			_ = os.Stdout.Sync()
+		}
+
+		if err := ociClient.DownloadBlobAndExtractCargo(ctx, l.Digest, tmpLandDir, onProgress); err != nil {
+			fmt.Fprintf(os.Stderr, "\n[-] 提取货舱分层失败: %v\n", err)
 			os.Exit(1)
 		}
+
+		duration := time.Since(startTime)
+		elapsedSec := duration.Seconds()
+		if elapsedSec <= 0.001 {
+			elapsedSec = 0.001
+		}
+		avgSpeed := float64(layerSize) / (1024 * 1024) / elapsedSec
+		durStr := duration.Round(10 * time.Millisecond).String()
+		fmt.Printf("\r   ✓ [%d/%d] 货舱分层调取完毕 (体积: %s, 耗时 %s, 均速 %.1f MB/s)                          \n",
+			idx+1, len(mf.Layers), formatBytes(layerSize), durStr, avgSpeed)
+		_ = os.Stdout.Sync()
 	}
 	fmt.Println("✓ 原生 OCI 集装箱卸载提取成功 (零 Docker 守护进程依赖)！")
 
@@ -230,7 +290,13 @@ func runLand(args []string) {
 		}
 
 		fullFile := filepath.Join(tmpLandDir, fname)
+		fi, _ := os.Stat(fullFile)
+		fSizeStr := ""
+		if fi != nil {
+			fSizeStr = formatBytes(fi.Size())
+		}
 
+		unpackStart := time.Now()
 		if archive.IsEncryptedArchive(fname) {
 			if len(sealPass) == 0 {
 				fmt.Fprintf(os.Stderr, "[-] 货舱 [%s] 包含 AES-256 安全密闭封条，但当前未配置解密口令！\n", fname)
@@ -238,30 +304,35 @@ func runLand(args []string) {
 				os.Exit(1)
 			}
 			if isRootFiles {
-				fmt.Printf("-> 正在开封并原位展开根级同级文件 (%s -> %s)...\n", fname, destDir)
+				fmt.Printf("-> 正在开封并原位展开根级同级文件: %s (%s) -> %s...\n", fname, fSizeStr, destDir)
 			} else {
-				fmt.Printf("-> 正在开封并流式还原 (%s -> %s, 零中间解密文件落盘)...\n", fname, targetSubDir)
+				fmt.Printf("-> 正在开封并流式还原舱位: %s (%s) -> %s (零中间解密文件落盘)...\n", fname, fSizeStr, targetSubDir)
 			}
+			_ = os.Stdout.Sync()
 			if err := archive.UnsealAndUnpackStream(fullFile, targetSubDir, sealPass); err != nil {
 				fmt.Fprintf(os.Stderr, "[-] 解封还原失败: %v\n", err)
 				os.Exit(1)
 			}
 		} else {
 			if isRootFiles {
-				fmt.Printf("-> 正在解包并原位展开根级同级文件至 %s...\n", destDir)
+				fmt.Printf("-> 正在解包并原位展开根级同级文件: %s (%s) -> %s...\n", fname, fSizeStr, destDir)
 			} else {
-				fmt.Printf("-> 正在解包还原舱位货物: %s 到 %s...\n", folderName, targetSubDir)
+				fmt.Printf("-> 正在解包还原舱位货物: %s (%s) -> %s...\n", folderName, fSizeStr, targetSubDir)
 			}
+			_ = os.Stdout.Sync()
 			if err := archive.UnpackTar(fullFile, targetSubDir); err != nil {
 				fmt.Fprintf(os.Stderr, "[-] 还原解包失败: %v\n", err)
 				os.Exit(1)
 			}
 		}
+
+		unpackDur := time.Since(unpackStart).Round(10 * time.Millisecond)
 		if isRootFiles {
-			fmt.Println("   ✓ 根级同级配置文件与脚本已成功原位展开归位！")
+			fmt.Printf("   ✓ 根级同级配置文件与脚本已成功原位展开归位！(体积: %s, 耗时 %s)\n", fSizeStr, unpackDur)
 		} else {
-			fmt.Printf("   ✓ 舱位 [%s] 货物已完整归位！\n", folderName)
+			fmt.Printf("   ✓ 舱位 [%s] 货物已完整归位！(体积: %s, 耗时 %s)\n", folderName, fSizeStr, unpackDur)
 		}
+		_ = os.Stdout.Sync()
 	}
 
 	fmt.Println("\n================================================================")

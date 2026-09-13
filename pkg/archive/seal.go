@@ -506,7 +506,7 @@ func UnsealAndUnpackStream(srcDatPath, destDir string, passphrase []byte) error 
 	go func() {
 		mode := cipher.NewCBCDecrypter(block, iv)
 		blockSize := block.BlockSize()
-		bufSize := 64 * 1024
+		bufSize := 512 * 1024
 		buf := make([]byte, bufSize)
 		var prevPlain []byte
 
