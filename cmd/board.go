@@ -222,9 +222,7 @@ func runBoard(args []string, dryRun bool) {
 
 	tag, category, precision, retryCount, shouldClean, cleanAll := parseBoardFlags(cfg, args)
 
-	fmt.Println("================================================================")
-	fmt.Println("          🚢 Ark 班轮装载登船 (Zero-Docker OCI Engine)          ")
-	fmt.Println("================================================================")
+	PrintBanner("🚢 Ark 班轮装载登船 (Zero-Docker OCI Engine)")
 	if len(targets) == 1 {
 		fmt.Printf("[港位] 目标仓库: %s (%s)\n", targets[0].Repository, targets[0].DisplayName)
 	} else {

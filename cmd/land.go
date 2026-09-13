@@ -108,9 +108,7 @@ func runLand(args []string) {
 
 	fullImage := fmt.Sprintf("%s:%s", cfg.Repository, tag)
 
-	fmt.Println("================================================================")
-	fmt.Println("          ⚓ Ark 班轮靠岸下船系统 (Landing System)              ")
-	fmt.Println("================================================================")
+	PrintBanner("⚓ Ark 班轮靠岸下船系统 (Landing System)")
 	fmt.Printf("[港位] 来源港位: %s (%s)\n", provider.Repository(), provider.DisplayName())
 	fmt.Printf("[主机] 港口主机: %s\n", provider.Host())
 	fmt.Printf("[场景] 所属分类: %s\n", category)

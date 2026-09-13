@@ -36,9 +36,7 @@ func runUnpack(args []string) {
 		targetPath = filepath.Join(ws, targetPath)
 	}
 
-	fmt.Println("================================================================")
-	fmt.Println("          📦 Ark 本地货物独立解封系统 (Zero-Docker Engine)      ")
-	fmt.Println("================================================================")
+	PrintBanner("📦 Ark 本地货物独立解封系统 (Zero-Docker Engine)")
 
 	var sealPass []byte
 	if pass, err := resolveSealKey(ws, false, cliKey); err == nil {

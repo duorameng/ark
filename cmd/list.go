@@ -26,9 +26,7 @@ func runList(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Println("================================================================")
-	fmt.Println("          ⚓ Ark 港口航次查询终端 (Registry Query)             ")
-	fmt.Println("================================================================")
+	PrintBanner("⚓ Ark 港口航次查询终端 (Registry Query)")
 	if categoryFilter != "" {
 		fmt.Printf("[筛选] 指定分类: %s\n", categoryFilter)
 	}

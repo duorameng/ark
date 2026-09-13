@@ -20,9 +20,7 @@ func runScan(args []string) {
 		fromEnv = false
 	}
 
-	fmt.Println("================================================================")
-	fmt.Println("        🔍 Ark 货舱全自动扫描探测与变动率排序工具 (Golang)      ")
-	fmt.Println("================================================================")
+	PrintBanner("🔍 Ark 货舱全自动扫描探测与变动率排序工具")
 	if fromEnv {
 		fmt.Printf("[扫描目标] 总目录: %s (自动读取自 .env / ARK_BACKUP_DIR)\n", scanRoot)
 	} else {

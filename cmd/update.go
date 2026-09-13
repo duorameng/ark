@@ -15,9 +15,7 @@ func runUpdate(args []string) {
 		target = args[0]
 	}
 
-	fmt.Println("================================================================")
-	fmt.Println("          🚀 Ark 班轮自我升级系统 (Self-Update System)          ")
-	fmt.Println("================================================================")
+	PrintBanner("🚀 Ark 班轮自我升级系统 (Self-Update System)")
 
 	if err := update.SelfUpdate(AppVersion, target, token); err != nil {
 		fmt.Fprintf(os.Stderr, "[-] 升级失败: %v\n", err)

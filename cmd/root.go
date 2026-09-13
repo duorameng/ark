@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 
 	"ark/pkg/update"
 )
@@ -14,6 +15,21 @@ var (
 	AppCommit    = "none"
 	AppBuildDate = "unknown"
 )
+
+// PrintBanner 统一输出 Ark 模块专属横幅并标明当前程序版本与构建信息
+func PrintBanner(moduleTitle string) {
+	fmt.Println("================================================================")
+	fmt.Printf("          %s\n", strings.TrimSpace(moduleTitle))
+	buildInfo := fmt.Sprintf("版本: %s | 架构: %s/%s", AppVersion, runtime.GOOS, runtime.GOARCH)
+	if AppCommit != "" && AppCommit != "none" {
+		buildInfo += fmt.Sprintf(" | 提交: %s", AppCommit)
+	}
+	if AppBuildDate != "" && AppBuildDate != "unknown" {
+		buildInfo += fmt.Sprintf(" | 构建: %s", AppBuildDate)
+	}
+	fmt.Printf("          [%s]\n", buildInfo)
+	fmt.Println("================================================================")
+}
 
 // Execute 统一命令分发与调度入口
 func Execute(version, commit, buildDate string) {

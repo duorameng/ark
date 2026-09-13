@@ -25,9 +25,7 @@ func runCheck(args []string) {
 	ws := getWorkspaceRoot()
 	loadEnvFile(ws)
 
-	fmt.Println("================================================================")
-	fmt.Println("          🩺 Ark 航运配置与系统健康体检 (Diagnostic Check)     ")
-	fmt.Println("================================================================")
+	PrintBanner("🩺 Ark 航运配置与系统健康体检 (Diagnostic Check)")
 	fmt.Printf("[体检] 正在扫描工作区: %s\n\n", ws)
 
 	passCount := 0

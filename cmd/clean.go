@@ -35,9 +35,7 @@ func runClean(args []string) {
 		}
 	}
 
-	fmt.Println("================================================================")
-	fmt.Println("          🧹 Ark 本地工作区与环境重置系统 (Workspace Reset)       ")
-	fmt.Println("================================================================")
+	PrintBanner("🧹 Ark 本地工作区与环境重置系统 (Workspace Reset)")
 	fmt.Printf("[重置] 工作区根目录: %s\n\n", ws)
 
 	// 1. 清理 cache/ 目录
