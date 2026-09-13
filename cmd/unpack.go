@@ -28,6 +28,10 @@ func runUnpack(args []string) {
 		destDir = cliDest
 	} else if len(args) > 1 {
 		destDir = args[1]
+	} else if envDest := os.Getenv("ARK_DEST_DIR"); envDest != "" {
+		destDir = envDest
+	} else if envDeploy := os.Getenv("ARK_DEPLOY_DIR"); envDeploy != "" {
+		destDir = envDeploy
 	} else if envRestore := os.Getenv(config.EnvArkRestoreDir); envRestore != "" {
 		destDir = envRestore
 	}

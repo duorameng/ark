@@ -92,11 +92,15 @@ func runLand(args []string) {
 		}
 	}
 
-	// 综合确定目标恢复目录：命令行 -o/--dest > 命令行第 2 参数 > 环境变量 ARK_RESTORE_DIR > 默认落地目录
+	// 综合确定目标落地部署目录：命令行 -o/--dest > 命令行第 2 参数 > 环境变量 (ARK_DEST_DIR / ARK_DEPLOY_DIR / ARK_RESTORE_DIR) > 默认落地目录
 	if cliDest != "" {
 		destDir = cliDest
 	} else if len(args) > 1 {
 		destDir = args[1]
+	} else if envDest := os.Getenv("ARK_DEST_DIR"); envDest != "" {
+		destDir = envDest
+	} else if envDeploy := os.Getenv("ARK_DEPLOY_DIR"); envDeploy != "" {
+		destDir = envDeploy
 	} else if envRestore := os.Getenv(config.EnvArkRestoreDir); envRestore != "" {
 		destDir = envRestore
 	} else {

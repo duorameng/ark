@@ -48,6 +48,8 @@ const (
 	EnvArkBackupDir         = "ARK_BACKUP_DIR"
 	EnvArkBackupPath        = "ARK_BACKUP_PATH"
 	EnvArkSourceDir         = "ARK_SOURCE_DIR"
+	EnvArkDestDir           = "ARK_DEST_DIR"
+	EnvArkDeployDir         = "ARK_DEPLOY_DIR"
 	EnvArkRestoreDir        = "ARK_RESTORE_DIR"
 	EnvArkProxy             = "ARK_PROXY"
 	EnvArkTarget            = "ARK_TARGET"
