@@ -285,6 +285,7 @@ func runBoard(args []string, dryRun bool) {
 
 		displayName := src.Name
 		fmt.Printf("  🔍 [%s] 正在检视货物特征...", displayName)
+		_ = os.Stdout.Sync()
 
 		dirInfo, err := hash.ComputeSourceTreeHash(srcPath, src.IsRootFiles())
 		if err != nil {
